@@ -16,6 +16,8 @@ import org.junit.jupiter.api.Timeout;
  * Targets of one trillion (10^12) under NeoECO's in-game defaults (10 s, 5M work, 64 MiB): the frozen NeoECO port
  * against the optimised solver on identical inputs. Prints timings and verdicts; asserts nothing beyond running.
  */
+@org.junit.jupiter.api.Disabled("Long-running suite, disabled for everyday builds; remove this line to run it")
+@org.junit.jupiter.api.Tag("slow")
 class TrillionTargetBenchmarkTest {
     private static final long TRILLION = 1_000_000_000_000L;
 

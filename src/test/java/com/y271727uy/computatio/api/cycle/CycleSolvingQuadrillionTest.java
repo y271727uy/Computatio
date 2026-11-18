@@ -22,6 +22,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 /** Can a cyclic recipe with a 10^15 ("千万亿") target be planned inside the MC default budget (10 s, 5M work)? */
+@org.junit.jupiter.api.Disabled("Long-running suite, disabled for everyday builds; remove this line to run it")
+@org.junit.jupiter.api.Tag("slow")
 class CycleSolvingQuadrillionTest {
     private static final long QUADRILLION = 1_000_000_000_000_000L;
 

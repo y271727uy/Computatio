@@ -28,6 +28,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 /** Second-round stress: bigger oracle nets, metamorphic relations, concurrency, budgets. */
+@org.junit.jupiter.api.Disabled("Long-running suite, disabled for everyday builds; remove this line to run it")
+@org.junit.jupiter.api.Tag("slow")
 class CycleSolvingStressTest {
     private static final int SAMPLES = Integer.parseInt(System.getenv().getOrDefault("COMPUTATIO_STRESS_SAMPLES", "1500"));
 

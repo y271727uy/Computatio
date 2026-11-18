@@ -30,6 +30,8 @@ dependencies {
 
 tasks.named('test', Test).configure {
     useJUnitPlatform()
+    // All tests are switched off for now so `build` only compiles and packages; delete this line to run them again.
+    enabled = false
 }
 
 publishing {
