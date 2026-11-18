@@ -6,6 +6,11 @@ plugins {
 group = 'com.y271727uy'
 version = '0.1.0'
 
+def releaseTag = providers.gradleProperty('releaseTag').orNull
+if (releaseTag != null && releaseTag != "v${version}".toString()) {
+    throw new GradleException("Release tag '${releaseTag}' must match v${version}.")
+}
+
 base {
     archivesName = 'computatio'
 }
@@ -38,12 +43,20 @@ publishing {
     publications {
         mavenJava(MavenPublication) {
             from components.java
+            artifactId = 'computatio'
         }
     }
     repositories {
         maven {
             name = 'local'
             url = layout.buildDirectory.dir('repo')
+        }
+        if (releaseTag != null) {
+            maven {
+                name = 'githubPackages'
+                url = uri('https://maven.pkg.github.com/y271727uy/Computatio')
+                credentials(PasswordCredentials)
+            }
         }
     }
 }
