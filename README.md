@@ -7,3 +7,22 @@
 ~~斯大林排列~~
 等
 
+
+应该是能用
+
+```groovy
+repositories {
+    mavenCentral()
+    maven {
+        url = uri('https://y271727uy.github.io/Computatio/')
+        content {
+            includeModule('com.y271727uy', 'computatio')
+        }
+    }
+}
+
+dependencies {
+    implementation 'com.y271727uy:computatio:0.1.0'
+}
+```
+
