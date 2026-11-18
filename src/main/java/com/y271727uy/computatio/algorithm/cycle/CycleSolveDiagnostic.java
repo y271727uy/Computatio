@@ -43,6 +43,7 @@ public record CycleSolveDiagnostic(Code code, String message) {
         UNSUPPORTED_PATTERN,
         NO_TRANSITIONS,
         AMOUNT_OVERFLOW,
+        /** One amount exceeds the AE2 {@code long} range under NeoECO's rule; see {@link CycleSolution#exceedsLongRange()}. */
         EXECUTION_AMOUNT_UNREPRESENTABLE,
         CANCELLED,
         NOT_IMPLEMENTED,

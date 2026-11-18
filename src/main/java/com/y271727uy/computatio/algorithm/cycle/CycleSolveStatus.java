@@ -22,7 +22,12 @@ public enum CycleSolveStatus {
     TOO_COMPLEX,
     /** A pattern inside the SCC is not batch-safe (substitutions, remainders, malformed amounts). */
     UNSUPPORTED_PATTERN,
-    /** The exact cycle contract is known, but a caller's fixed-width (for example {@code long}) field cannot carry it. Reported by adapters, never by {@link BoundedCycleSolver}. */
+    /**
+     * The exact cycle contract is known, but a caller's fixed-width (for example {@code long}) field cannot carry it.
+     * {@link BoundedCycleSolver} reports it only to echo a caller-declared rejection or recipe total
+     * ({@link CycleNet.Builder#rejectTransition}, {@link CycleNet.Builder#unrepresentableTotals}); otherwise a long-based
+     * caller maps a result whose {@link CycleSolution#exceedsLongRange()} is true to this status, as NeoECO does.
+     */
     UNREPRESENTABLE,
     /** Cancellation was observed and converted into a value instead of an exception. */
     CANCELLED,

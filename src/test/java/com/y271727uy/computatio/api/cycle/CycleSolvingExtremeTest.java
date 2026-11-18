@@ -205,9 +205,22 @@ class CycleSolvingExtremeTest {
                 ring(3, PlannerAmount.of(1000), PlannerAmount.ONE), executor);
             assertEquals(CycleSolveStatus.SUCCESS, done.get(30, TimeUnit.SECONDS).status());
 
+            // Hold the single worker so the cancel deterministically precedes the solve (it now finishes in microseconds).
+            java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+            executor.execute(() -> {
+                try {
+                    release.await();
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+            });
             CompletableFuture<CycleSolution> cancelled = CycleSolving.solveAsync(
                 ring(3, PlannerAmount.of(1000), PlannerAmount.ONE), executor);
             cancelled.cancel(true);
+            release.countDown();
+            assertTrue(cancelled.isCancelled());
+            // The queued task observes the cancellation and never overwrites it.
+            executor.submit(() -> { }).get(30, TimeUnit.SECONDS);
             assertTrue(cancelled.isCancelled());
         } finally {
             executor.shutdownNow();

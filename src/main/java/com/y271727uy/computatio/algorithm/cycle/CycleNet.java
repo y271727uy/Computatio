@@ -22,6 +22,14 @@ import java.util.List;
  *   <li>{@code circuitSafe[t]}: the recipe's static contract allows exact circuit algebra (state equation and
  *   repeated-lap acceleration). When any transition is not circuit-safe the solver falls back to bounded search.</li>
  *   <li>{@code growthSafe[t]}: the recipe may use the closed-form single-recipe net-growth calculation.</li>
+ *   <li>{@code growthRemainder[t][k]}: determinate per-firing returns recorded on the recipe's inputs (for example an
+ *   empty container handed back). They are <em>not</em> part of {@code produced}; only the single-recipe growth
+ *   calculation counts them, exactly as NeoECO's validated pattern profile does. Zero unless set.</li>
+ *   <li>{@code declaredTransitionCount}: how many recipe views the caller saw before deduplication (at least the
+ *   transition count). It only sets how much shared planning budget preparation consumes, matching NeoECO.</li>
+ *   <li>{@code rejection[t]} / {@code unrepresentableTotals[t]}: caller-detected reasons a recipe cannot be modelled
+ *   (NeoECO's {@code unsupportedReason}) and a per-recipe input/output total beyond the long range. The solver
+ *   reports them at the same point of preparation, with the same budget use, as NeoECO. Null unless set.</li>
  *   <li>{@code stock[k]} / {@code required[k]}: the inventory snapshot and the absolute on-hand target.</li>
  * </ul>
  */
@@ -35,6 +43,10 @@ public final class CycleNet {
     private final boolean[] member;
     private final boolean[] circuitSafe;
     private final boolean[] growthSafe;
+    private final long[][] growthRemainder;
+    private final int declaredTransitionCount;
+    private final String[] rejection;
+    private final String[] unrepresentableTotals;
     private final PlannerAmount[] stock;
     private final PlannerAmount[] required;
 
@@ -48,6 +60,10 @@ public final class CycleNet {
         this.member = builder.member.clone();
         this.circuitSafe = toArray(builder.circuitSafe);
         this.growthSafe = toArray(builder.growthSafe);
+        this.growthRemainder = builder.growthRemainder.stream().map(long[]::clone).toArray(long[][]::new);
+        this.declaredTransitionCount = Math.max(builder.declaredTransitionCount, builder.transitionNames.size());
+        this.rejection = builder.rejection.toArray(new String[0]);
+        this.unrepresentableTotals = builder.unrepresentableTotals.toArray(new String[0]);
         this.stock = builder.stock.clone();
         this.required = builder.required.clone();
     }
@@ -66,6 +82,12 @@ public final class CycleNet {
     public boolean member(int key) { return member[key]; }
     public boolean circuitSafe(int transition) { return circuitSafe[transition]; }
     public boolean growthSafe(int transition) { return growthSafe[transition]; }
+    public long growthRemainder(int transition, int key) { return growthRemainder[transition][key]; }
+    public int declaredTransitionCount() { return declaredTransitionCount; }
+    /** Caller-detected reason the recipe cannot be modelled, or null. */
+    public String rejection(int transition) { return rejection[transition]; }
+    /** Caller-detected per-recipe total beyond the long range (message detail), or null. */
+    public String unrepresentableTotals(int transition) { return unrepresentableTotals[transition]; }
     public PlannerAmount stock(int key) { return stock[key]; }
     public PlannerAmount required(int key) { return required[key]; }
 
@@ -99,7 +121,11 @@ public final class CycleNet {
         }
         for (int t = 0; t < transitionCount(); t++) {
             builder.addTransition(transitionNames.get(t), consumed[t], produced[t], circuitSafe[t], growthSafe[t]);
+            builder.growthRemainder(t, growthRemainder[t]);
+            if (rejection[t] != null) builder.rejectTransition(t, rejection[t]);
+            if (unrepresentableTotals[t] != null) builder.unrepresentableTotals(t, unrepresentableTotals[t]);
         }
+        builder.declaredTransitions(declaredTransitionCount);
         return builder;
     }
 
@@ -121,6 +147,10 @@ public final class CycleNet {
         private final List<long[]> produced = new ArrayList<>();
         private final List<Boolean> circuitSafe = new ArrayList<>();
         private final List<Boolean> growthSafe = new ArrayList<>();
+        private final List<long[]> growthRemainder = new ArrayList<>();
+        private int declaredTransitionCount;
+        private final List<String> rejection = new ArrayList<>();
+        private final List<String> unrepresentableTotals = new ArrayList<>();
 
         private Builder(int keyCount) {
             if (keyCount < 0) throw new IllegalArgumentException("Key count must not be negative");
@@ -190,7 +220,51 @@ public final class CycleNet {
             produced.add(producedPerFiring.clone());
             circuitSafe.add(circuitSafeTransition);
             growthSafe.add(growthSafeTransition);
+            growthRemainder.add(new long[keyCount]);
+            rejection.add(null);
+            unrepresentableTotals.add(null);
             return index;
+        }
+
+        /**
+         * Sets the per-firing returns recorded on a transition's inputs, indexed by key (see the class notes). Only
+         * the single-recipe growth calculation reads them.
+         */
+        public Builder growthRemainder(int transition, long[] remainderPerFiring) {
+            if (remainderPerFiring.length != keyCount) {
+                throw new IllegalArgumentException("Remainder vector must have one entry per key");
+            }
+            for (long amount : remainderPerFiring) {
+                if (amount < 0) throw new IllegalArgumentException("Remainder amounts must not be negative");
+            }
+            growthRemainder.set(transition, remainderPerFiring.clone());
+            return this;
+        }
+
+        /**
+         * Marks a recipe the caller cannot model (NeoECO's {@code unsupportedReason}). A reason starting with
+         * {@code "AMOUNT_UNREPRESENTABLE:"} is reported as {@link CycleSolveStatus#UNREPRESENTABLE}, any other as
+         * {@link CycleSolveStatus#UNSUPPORTED_PATTERN}; the first marked transition in order wins.
+         */
+        public Builder rejectTransition(int transition, String reason) {
+            rejection.set(transition, java.util.Objects.requireNonNull(reason, "reason"));
+            return this;
+        }
+
+        /**
+         * Marks a recipe whose summed input or output amount for one key exceeds the long range, so its row cannot
+         * be built; {@code detail} completes the diagnostic (for example {@code "input total for k amount=… max=…"}).
+         */
+        public Builder unrepresentableTotals(int transition, String detail) {
+            unrepresentableTotals.set(transition, java.util.Objects.requireNonNull(detail, "detail"));
+            return this;
+        }
+
+        /** Number of recipe views before deduplication; values below the transition count are raised to it. */
+        public Builder declaredTransitions(int count) {
+            if (count < 0) throw new IllegalArgumentException("Declared transition count must not be negative");
+            declaredTransitionCount = count;
+            return this;
         }
 
         public CycleNet build() {

@@ -89,6 +89,19 @@ public record CycleSolution(
         return countKnowledge == ExecutionCountKnowledge.EXACT;
     }
 
+    /**
+     * True when an execution amount leaves the {@code long} range under NeoECO's rule (any runtime count, start-up
+     * seed, external demand or shortfall); the result then carries one {@code EXECUTION_AMOUNT_UNREPRESENTABLE}
+     * diagnostic per amount. The amounts here stay exact; a long-based caller such as NeoECO reports this result as
+     * {@link CycleSolveStatus#UNREPRESENTABLE}. The solver already takes NeoECO's branches on this condition.
+     */
+    public boolean exceedsLongRange() {
+        for (CycleSolveDiagnostic diagnostic : diagnostics) {
+            if (diagnostic.code() == CycleSolveDiagnostic.Code.EXECUTION_AMOUNT_UNREPRESENTABLE) return true;
+        }
+        return false;
+    }
+
     /** Firing count of one transition; zero when counts are unknown or the transition does not fire. */
     public PlannerAmount firingsOf(int transition) {
         return transition < firings.size() ? firings.get(transition) : PlannerAmount.ZERO;

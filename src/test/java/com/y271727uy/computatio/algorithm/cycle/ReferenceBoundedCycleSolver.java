@@ -7,7 +7,9 @@ import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /** FROZEN REFERENCE COPY (behaviour oracle for optimisation work) — do not edit.
@@ -51,26 +53,49 @@ public final class ReferenceBoundedCycleSolver implements CycleSolver {
 
     /**
      * Verify a caller's fixed integer candidate with the prefix/repeat algebra, without optimizing it again.
-     * Returns {@code null} when the net does not admit circuit algebra, a count is negative, or the certificate
-     * would not verify exactly this candidate.
+     * Returns {@code null} when the net does not admit circuit algebra, the array length differs from the transition
+     * count, a count is negative, or the certificate would not verify exactly this candidate. A {@code null} or zero
+     * entry means the transition does not fire; this matches NeoECO called with a map holding only the positive
+     * counts. Use {@link #verifyFirings(CycleNet, Map, CycleSolveLimits, Cancellation)} for NeoECO's exact map
+     * semantics, where explicit zero entries matter.
      */
     public CycleSolution verifyFirings(CycleNet net, PlannerAmount[] counts, CycleSolveLimits limits,
             Cancellation cancellation) throws InterruptedException {
+        Map<Integer, PlannerAmount> sparse = new LinkedHashMap<>();
+        for (int i = 0; i < counts.length; i++) {
+            if (counts[i] != null && counts[i].signum() != 0) sparse.put(i, counts[i]);
+        }
+        return verify(net, sparse, counts.length != net.transitionCount(), limits, cancellation);
+    }
+
+    /**
+     * NeoECO's {@code verifyFirings(request, Map<IPatternDetails, PlannerAmount>, ...)}, keyed by transition index.
+     * Missing transitions do not fire and a negative count gives {@code null}. The candidate is replayed first, and
+     * the result is returned only when its positive firing counts equal {@code counts} exactly as a map: an explicit
+     * zero entry, or a key that is not a transition, therefore gives {@code null}, as in NeoECO.
+     */
+    public CycleSolution verifyFirings(CycleNet net, Map<Integer, PlannerAmount> counts, CycleSolveLimits limits,
+            Cancellation cancellation) throws InterruptedException {
+        return verify(net, counts, false, limits, cancellation);
+    }
+
+    private CycleSolution verify(CycleNet net, Map<Integer, PlannerAmount> counts, boolean lengthMismatch,
+            CycleSolveLimits limits, Cancellation cancellation) throws InterruptedException {
         CycleMemoryBudget memory = new CycleMemoryBudget(maxMemoryBytes);
         try {
             Object prepared = prepare(net, limits, cancellation, memory);
             if (prepared instanceof CycleSolution) return (CycleSolution) prepared;
             Model model = (Model) prepared;
-            if (!model.circuitSafe || counts.length != model.transitionCount()) return null;
+            if (!model.circuitSafe || lengthMismatch) return null;
             PlannerAmount[] vector = new PlannerAmount[model.transitionCount()];
             for (int i = 0; i < vector.length; i++) {
-                vector[i] = counts[i] == null ? PlannerAmount.ZERO : counts[i];
+                vector[i] = counts.getOrDefault(i, PlannerAmount.ZERO);
                 if (vector[i].signum() < 0) return null;
             }
             CycleSolution result = solveEquationWitness(model,
                 new ReferenceCycleStateEquation.Result(ReferenceCycleStateEquation.Status.FEASIBLE, vector), cancellation, memory);
             // The certificate must verify this exact candidate, not a repaired or truncated vector.
-            if (result != null && !result.firings().equals(Arrays.asList(vector))) return null;
+            if (result != null && !positiveFirings(result).equals(counts)) return null;
             return result;
         } catch (CycleMemoryBudget.Exhausted exhausted) {
             return CycleSolution.failure(CycleSolveStatus.UNKNOWN_BUDGET,
@@ -78,9 +103,20 @@ public final class ReferenceBoundedCycleSolver implements CycleSolver {
         }
     }
 
+    /** NeoECO's {@code exactPatternTimes}: only transitions that fire, by index. */
+    private static Map<Integer, PlannerAmount> positiveFirings(CycleSolution result) {
+        Map<Integer, PlannerAmount> positive = new LinkedHashMap<>();
+        for (int t = 0; t < result.firings().size(); t++) {
+            if (result.firings().get(t).signum() > 0) positive.put(t, result.firings().get(t));
+        }
+        return positive;
+    }
+
     @Override
     public CycleSolution solve(CycleNet net, CycleSolveLimits limits, Cancellation cancellation)
             throws InterruptedException {
+        // As in NeoECO: a caller without a shared planning allowance still gets the default one.
+        if (!(cancellation instanceof PlanningBudget)) cancellation = new PlanningBudget(cancellation);
         cancellation.checkpoint();
         try {
             return run(net, limits == null ? CycleSolveLimits.DEFAULT : limits, cancellation);
@@ -109,7 +145,7 @@ public final class ReferenceBoundedCycleSolver implements CycleSolver {
                 Arrays.asList(exactDeliverable(model, model.stock)), List.of(), diagnostics, stockMetrics);
         }
 
-        CycleSolution growth = growthWitness(model, growth(model));
+        CycleSolution growth = growthWitness(model, growth(model.net));
         if (growth != null) return growth;
 
         boolean recipeCircuits = model.circuitSafe;
@@ -135,7 +171,10 @@ public final class ReferenceBoundedCycleSolver implements CycleSolver {
         }
         CycleSolution equation = balance.counts() == null ? null
             : solveEquationWitness(model, balance, cancellation, memory);
-        if (equation != null && equation.status() == CycleSolveStatus.SUCCESS) return equation;
+        // NeoECO also stops here when the equation witness leaves the long range (its UNREPRESENTABLE status).
+        if (equation != null && (equation.status() == CycleSolveStatus.SUCCESS || equation.exceedsLongRange())) {
+            return equation;
+        }
         if (!recipeCircuits) {
             StringBuilder contracts = new StringBuilder();
             for (int t = 0; t < model.transitionCount(); t++) {
@@ -205,6 +244,7 @@ public final class ReferenceBoundedCycleSolver implements CycleSolver {
                 exactShortfall[i] = base[i];
             }
         }
+        addLongRangeDiagnostics(diagnostics, model, "cycle seed/shortfall", exactShortfall, exactSeed);
         CycleSolveMetrics ladderMetrics = new CycleSolveMetrics(model.keyCount(), model.transitionCount(), visited,
             expanded, 0, 0, false, false);
         diagnostics.add(new CycleSolveDiagnostic(CycleSolveDiagnostic.Code.SEED_SHORTFALL,
@@ -229,13 +269,26 @@ public final class ReferenceBoundedCycleSolver implements CycleSolver {
             return CycleSolution.failure(CycleSolveStatus.UNSUPPORTED_PATTERN,
                 CycleSolveDiagnostic.Code.NO_TRANSITIONS, "Cyclic component carries no transition");
         }
+        // NeoECO first deduplicates every declared recipe view, one checkpoint each.
+        for (int p = 0; p < net.declaredTransitionCount(); p++) cancellation.checkpoint();
         if (limits.maxPatterns() > 0 && t > limits.maxPatterns()) {
             return CycleSolution.failure(CycleSolveStatus.TOO_COMPLEX,
                 CycleSolveDiagnostic.Code.PATTERN_LIMIT_EXCEEDED,
                 "Cyclic component has " + t + " transitions, limit is " + limits.maxPatterns());
         }
         for (int p = 0; p < t; p++) {
-            cancellation.checkpoint();
+            // NeoECO's unsupportedReason pass, in transition order.
+            String reason = net.rejection(p);
+            if (reason != null) {
+                if (reason.startsWith("AMOUNT_UNREPRESENTABLE:")) {
+                    return CycleSolution.failure(CycleSolveStatus.UNREPRESENTABLE,
+                        CycleSolveDiagnostic.Code.EXECUTION_AMOUNT_UNREPRESENTABLE,
+                        "Pattern " + net.transitionName(p) + " " + reason);
+                }
+                return CycleSolution.failure(CycleSolveStatus.UNSUPPORTED_PATTERN,
+                    CycleSolveDiagnostic.Code.UNSUPPORTED_PATTERN,
+                    "Pattern " + net.transitionName(p) + " is not batch-safe inside a cycle: " + reason);
+            }
             boolean output = false;
             for (int i = 0; i < n; i++) output |= net.produced(p, i) > 0;
             if (!output) {
@@ -251,6 +304,16 @@ public final class ReferenceBoundedCycleSolver implements CycleSolver {
         }
 
         memory.retain(256L + 256L * n + 256L * t + 24L * t * n);
+        // NeoECO then builds the per-transition matrices, one checkpoint per transition.
+        for (int p = 0; p < t; p++) {
+            cancellation.checkpoint();
+            String overflow = net.unrepresentableTotals(p);
+            if (overflow != null) {
+                return CycleSolution.failure(CycleSolveStatus.UNREPRESENTABLE,
+                    CycleSolveDiagnostic.Code.EXECUTION_AMOUNT_UNREPRESENTABLE,
+                    "Pattern " + net.transitionName(p) + " " + overflow);
+            }
+        }
         long[][] cons = net.consumedMatrix();
         long[][] prod = net.producedMatrix();
         boolean[] suppliable = net.boundaryArray().clone();
@@ -319,38 +382,73 @@ public final class ReferenceBoundedCycleSolver implements CycleSolver {
      * Closed-form firing count for one growth-safe transition that consumes and returns a single feedback key
      * with positive net growth. Returns {@code null} for every other shape; the result is still replayed.
      */
-    private static Growth growth(Model model) {
-        if (model.transitionCount() != 1 || !model.net.growthSafe(0)) return null;
+    private static Growth growth(CycleNet net) {
+        if (net.transitionCount() != 1 || !net.growthSafe(0)) return null;
+        int n = net.keyCount();
+        long[] cons = net.consumedMatrix()[0];
+        long[] prod = net.producedMatrix()[0];
+        PlannerAmount[] stock = net.stockArray();
+        PlannerAmount[] required = net.requiredArray();
+        // NeoECO's profile counts fresh production plus the determinate remainders recorded on the inputs.
+        long[] gross = new long[n];
+        for (int k = 0; k < n; k++) {
+            long sum = prod[k] + net.growthRemainder(0, k);
+            if (sum < 0) return null; // the profile validator rejects totals beyond the long range
+            gross[k] = sum;
+        }
         int feedback = -1;
-        for (int k = 0; k < model.keyCount(); k++) {
-            if (model.cons[0][k] > 0 && model.prod[0][k] > 0) {
+        for (int k = 0; k < n; k++) {
+            if (cons[k] > 0 && gross[k] > 0) {
                 if (feedback >= 0) return null;
                 feedback = k;
             }
         }
         if (feedback < 0) return null;
         int members = 0;
-        for (int k = 0; k < model.keyCount(); k++) if (model.net.member(k)) members++;
-        if (members > 0 && (members != 1 || !model.net.member(feedback))) return null;
-        PlannerAmount consume = PlannerAmount.of(model.cons[0][feedback]);
-        PlannerAmount produce = PlannerAmount.of(model.prod[0][feedback]);
+        for (int k = 0; k < n; k++) if (net.member(k)) members++;
+        if (members > 0 && (members != 1 || !net.member(feedback))) return null;
+        PlannerAmount consume = PlannerAmount.of(cons[feedback]);
+        PlannerAmount produce = PlannerAmount.of(gross[feedback]);
         PlannerAmount growth = produce.subtract(consume);
         if (growth.signum() <= 0) return null;
         PlannerAmount firings = PlannerAmount.ZERO;
-        for (int k = 0; k < model.keyCount(); k++) {
-            if (model.required[k].signum() <= 0) continue;
-            PlannerAmount outstanding = model.required[k].subtract(model.stock[k].max(PlannerAmount.ZERO));
+        for (int k = 0; k < n; k++) {
+            if (required[k].signum() <= 0) continue;
+            PlannerAmount outstanding = required[k].subtract(stock[k].max(PlannerAmount.ZERO));
             if (outstanding.signum() <= 0) continue;
-            PlannerAmount perFiring = PlannerAmount.of(model.prod[0][k]).subtract(PlannerAmount.of(model.cons[0][k]));
+            PlannerAmount perFiring = PlannerAmount.of(gross[k]).subtract(PlannerAmount.of(cons[k]));
             if (perFiring.signum() <= 0) return null;
             firings = firings.max(outstanding.ceilDiv(perFiring));
         }
         if (firings.signum() <= 0) return null;
-        PlannerAmount shortfall = consume.subtract(model.stock[feedback].max(PlannerAmount.ZERO)).max(PlannerAmount.ZERO);
-        String name = model.net.keyName(feedback);
+        PlannerAmount shortfall = consume.subtract(stock[feedback].max(PlannerAmount.ZERO)).max(PlannerAmount.ZERO);
+        String name = net.keyName(feedback);
         return new Growth(firings, consume + " " + name + " -> " + produce + " " + name + " (delta +" + growth
             + "), " + firings + " firing(s), seed " + consume
             + (shortfall.signum() > 0 ? ", seed shortfall " + shortfall : " covered by stock"));
+    }
+
+    /**
+     * NeoECO's {@code BoundedCycleSolver.solveGrowth}: only the single-recipe net-growth path. A plain cancellation
+     * gets the default budget; after one checkpoint the closed form is evaluated on the net, and {@code null} is
+     * returned before any preparation when it does not apply. Otherwise the result is a preparation rejection, the
+     * replayed growth witness, or {@code null} when that witness does not reach the target.
+     */
+    public CycleSolution solveGrowth(CycleNet net, CycleSolveLimits limits, Cancellation cancellation)
+            throws InterruptedException {
+        if (!(cancellation instanceof PlanningBudget)) cancellation = new PlanningBudget(cancellation);
+        cancellation.checkpoint();
+        Growth growth = growth(net);
+        if (growth == null) return null;
+        try {
+            Object prepared = prepare(net, limits == null ? CycleSolveLimits.DEFAULT : limits, cancellation,
+                new CycleMemoryBudget(maxMemoryBytes));
+            if (prepared instanceof CycleSolution) return (CycleSolution) prepared;
+            return growthWitness((Model) prepared, growth);
+        } catch (CycleMemoryBudget.Exhausted exhausted) {
+            return CycleSolution.failure(CycleSolveStatus.UNKNOWN_BUDGET,
+                CycleSolveDiagnostic.Code.MEMORY_BUDGET_EXHAUSTED, exhausted.getMessage());
+        }
     }
 
     private CycleSolution growthWitness(Model model, Growth growth) {
@@ -417,7 +515,7 @@ public final class ReferenceBoundedCycleSolver implements CycleSolver {
             model.stock, model.required, cancellation, memory);
         if (balance.counts() == null) return null;
         CycleSolution result = solveEquationWitness(model, balance, cancellation, memory, true);
-        if (result == null || result.status() != CycleSolveStatus.INSUFFICIENT_EXTERNAL_INPUT
+        if (result == null || result.status() != CycleSolveStatus.INSUFFICIENT_EXTERNAL_INPUT || result.exceedsLongRange()
                 || result.seedShortfall().stream().noneMatch(amount -> amount.signum() > 0)) return null;
         return result.withStartupCandidates(startupCandidates(model, cancellation, memory));
     }
@@ -799,6 +897,18 @@ public final class ReferenceBoundedCycleSolver implements CycleSolver {
             if (missing.signum() > 0) exactShortfall[i] = missing;
         }
 
+        // NeoECO's AE2 boundary: every runtime count (pattern totals, batch counts, lap repetitions) must fit a long.
+        boolean runtimeCountsRepresentable = true;
+        for (PlannerAmount count : summary.counts) if (count.signum() > 0 && !count.fitsLong()) runtimeCountsRepresentable = false;
+        for (BatchFiring firing : witness) {
+            if (!firing.exactCount().fitsLong() || !firing.repetitions().fitsLong()) runtimeCountsRepresentable = false;
+        }
+        if (!runtimeCountsRepresentable) {
+            diagnostics.add(new CycleSolveDiagnostic(CycleSolveDiagnostic.Code.EXECUTION_AMOUNT_UNREPRESENTABLE,
+                "Batch firing count exceeds AE2 long range"));
+        }
+        addLongRangeDiagnostics(diagnostics, model, "cycle witness boundary", exactRequiredSeed, exactExternalDemand,
+            exactShortfall);
         List<CycleRun> plan = new ArrayList<>(witness.size());
         for (BatchFiring firing : witness) {
             plan.add(new CycleRun(firing.transition(), firing.exactCount(), firing.repeatWidth(), firing.repetitions()));
@@ -1101,6 +1211,27 @@ public final class ReferenceBoundedCycleSolver implements CycleSolver {
                 + " lookaheadNodes=" + metrics.lookaheadNodes()
                 + " heuristicMacroSteps=" + metrics.heuristicMacroSteps()
                 + " heuristicBudgetExhausted=" + metrics.heuristicBudgetExhausted());
+    }
+
+    /**
+     * NeoECO marks each amount beyond the AE2 long range with one diagnostic and reports the whole result as
+     * UNREPRESENTABLE; here the amounts stay exact and the diagnostic is the marker ({@link CycleSolution#exceedsLongRange}).
+     */
+    private static void addLongRangeDiagnostics(List<CycleSolveDiagnostic> diagnostics, Model model, String stage,
+            PlannerAmount[]... vectors) {
+        for (PlannerAmount[] vector : vectors) {
+            for (int i = 0; i < vector.length; i++) {
+                if (vector[i].signum() == 0 || vector[i].fitsLong()) continue;
+                StringBuilder transitions = new StringBuilder();
+                for (int t = 0; t < model.transitionCount(); t++) {
+                    if (t > 0) transitions.append(',');
+                    transitions.append(model.net.transitionName(t));
+                }
+                diagnostics.add(new CycleSolveDiagnostic(CycleSolveDiagnostic.Code.EXECUTION_AMOUNT_UNREPRESENTABLE,
+                    "Execution amount exceeds AE2 long range: key=" + model.net.keyName(i) + " producer=cycle pattern="
+                        + transitions + " amount=" + vector[i] + " max=" + Long.MAX_VALUE + " stage=" + stage));
+            }
+        }
     }
 
     private static String describe(Model model, PlannerAmount[] amounts) {

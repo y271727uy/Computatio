@@ -98,6 +98,30 @@ public final class CycleSolving {
     }
 
     /**
+     * Only the single-recipe net-growth path (NeoECO's {@code BoundedCycleSolver.solveGrowth}). Returns {@code null}
+     * when the closed form does not apply, so a caller can fall back to {@link #solve(CycleNet, CycleSolveLimits,
+     * Cancellation)} with the same budget, as NeoECO's {@code SinglePatternGrowthCycleSolver} does.
+     */
+    public static CycleSolution solveGrowth(CycleNet net, CycleSolveLimits limits, Cancellation cancellation)
+            throws InterruptedException {
+        Objects.requireNonNull(net, "net");
+        return new BoundedCycleSolver().solveGrowth(net, limits, cancellation == null ? Cancellation.NONE : cancellation);
+    }
+
+    /**
+     * NeoECO's map form of {@link #verifyFirings(CycleNet, PlannerAmount[], Cancellation)}, keyed by transition index:
+     * the result is returned only when its positive firing counts equal {@code counts} exactly, so an explicit zero
+     * entry or a key that is not a transition gives {@code null}.
+     */
+    public static CycleSolution verifyFirings(CycleNet net, Map<Integer, PlannerAmount> counts, Cancellation cancellation)
+            throws InterruptedException {
+        Objects.requireNonNull(net, "net");
+        Objects.requireNonNull(counts, "counts");
+        return new BoundedCycleSolver().verifyFirings(net, counts, CycleSolveLimits.DEFAULT,
+            cancellation == null ? Cancellation.NONE : cancellation);
+    }
+
+    /**
      * Exact minimum-firing integer solution of {@code stock + (produced - consumed) x >= target, x >= 0}.
      * Keys flagged in {@code imports} are unconstrained. A feasible vector is never a liveness proof.
      */
