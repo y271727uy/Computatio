@@ -16,12 +16,18 @@ permissions:
 
 jobs:
   build:
-    if: github.repository == 'y271727uy/Computatio'
+    if: github.repository == 'y271727uy/Computatio' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          persist-credentials: false
+
+      - name: Check out v0.1.0
+        uses: actions/checkout@v4
+        with:
           ref: refs/tags/v0.1.0
+          path: previous-release
           persist-credentials: false
 
       - uses: actions/setup-java@v4
@@ -32,7 +38,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Generate Maven repository
-        run: ./gradlew --no-daemon publishMavenJavaPublicationToLocalRepository -PreleaseTag=v0.1.0
+        run: |
+          (cd previous-release && ./gradlew --no-daemon publishMavenJavaPublicationToLocalRepository -PreleaseTag=v0.1.0)
+          mkdir -p build/repo
+          cp -a previous-release/build/repo/. build/repo/
+          ./gradlew --no-daemon publishMavenJavaPublicationToLocalRepository -PreleaseTag=v0.1.1
 
       - uses: actions/upload-pages-artifact@v4
         with:
