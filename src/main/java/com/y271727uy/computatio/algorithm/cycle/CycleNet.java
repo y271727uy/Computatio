@@ -4,68 +4,77 @@ import com.y271727uy.computatio.algorithm.amount.PlannerAmount;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 
 /**
- * Immutable, platform-independent description of one cyclic component, read as a small Petri net.
+ * Immutable description of one cyclic component, read as a small Petri net: exactly the information NeoECO's
+ * {@code BoundedCycleSolver} reads from a {@code CycleSolveRequest}, indexed by key and transition number.
  *
- * <p>A <em>key</em> (place) is one material: a component member, a transition input or output, or a required
- * output. A <em>transition</em> is one distinct recipe. Callers must deduplicate several views of the same
- * physical recipe before building the net, or a single firing would be counted twice.
- *
+ * <p>Keys must already be numbered the way NeoECO indexes them (members, then each transition's inputs and gross
+ * outputs, then the required keys) and transitions must already be deduplicated and ordered by pattern id;
+ * {@code api.cycle.CycleProblem} does both. Per key:
  * <ul>
- *   <li>{@code consumed[t][k]} / {@code produced[t][k]}: gross per-firing amounts. A catalyst or returned
- *   container is consumed and produced by the same firing; it is never pre-netted.</li>
- *   <li>{@code boundary[k]}: the rest of the caller's dependency graph can supply this key, so a deficit on it is
- *   imported and booked as external demand. Every other key is owned by the component and a deficit on it is a
- *   start-up seed that only stock can cover.</li>
- *   <li>{@code member[k]}: the key belongs to the cyclic component itself.</li>
- *   <li>{@code circuitSafe[t]}: the recipe's static contract allows exact circuit algebra (state equation and
- *   repeated-lap acceleration). When any transition is not circuit-safe the solver falls back to bounded search.</li>
- *   <li>{@code growthSafe[t]}: the recipe may use the closed-form single-recipe net-growth calculation.</li>
- *   <li>{@code growthRemainder[t][k]}: determinate per-firing returns recorded on the recipe's inputs (for example an
- *   empty container handed back). They are <em>not</em> part of {@code produced}; only the single-recipe growth
- *   calculation counts them, exactly as NeoECO's validated pattern profile does. Zero unless set.</li>
- *   <li>{@code declaredTransitionCount}: how many recipe views the caller saw before deduplication (at least the
- *   transition count). It only sets how much shared planning budget preparation consumes, matching NeoECO.</li>
- *   <li>{@code rejection[t]} / {@code unrepresentableTotals[t]}: caller-detected reasons a recipe cannot be modelled
- *   (NeoECO's {@code unsupportedReason}) and a per-recipe input/output total beyond the long range. The solver
- *   reports them at the same point of preparation, with the same budget use, as NeoECO. Null unless set.</li>
- *   <li>{@code stock[k]} / {@code required[k]}: the inventory snapshot and the absolute on-hand target.</li>
+ *   <li>{@code boundary}: named by the external resource boundary; importable unless it is a member.</li>
+ *   <li>{@code unbounded}: unlimited stock; always importable (NeoECO's {@code unboundedStock}).</li>
+ *   <li>{@code importCap}: a cap on a boundary import over the whole witness; such a key is modelled as finite stock.</li>
+ *   <li>{@code stock} / {@code required}: the request's raw amounts (negative values are clamped by the solver, but
+ *   the single-recipe growth calculation reads them raw, as NeoECO does).</li>
  * </ul>
+ * Per transition: gross per-firing consumption and production, {@code circuitSafe} (cycle-safe semantics without
+ * durability), {@code growthSafe} (NeoECO's validated NET_GROWTH_SAFE profile), {@code growthRemainder} (input
+ * remainders the growth profile counts), an optional growth profile (the consumption and gross production of the
+ * recipe view NeoECO's growth calculator reads: the first declared view, which may differ from the lowest-id view the
+ * solver models; it defaults to the transition's own vectors), and an optional caller {@code rejection} (NeoECO's
+ * {@code unsupportedReason}).
+ * {@code declaredTransitionCount} is the number of recipe views before deduplication and {@code growthSelfLoop}
+ * states that the component's internal edges are all self-loops of its single recipe on its single member.
  */
 public final class CycleNet {
     private final int keyCount;
-    private final List<String> keyNames;
-    private final List<String> transitionNames;
-    private final long[][] consumed;
-    private final long[][] produced;
+    private final String[] keyNames;
     private final boolean[] boundary;
+    private final boolean[] unbounded;
     private final boolean[] member;
-    private final boolean[] circuitSafe;
-    private final boolean[] growthSafe;
-    private final long[][] growthRemainder;
-    private final int declaredTransitionCount;
-    private final String[] rejection;
-    private final String[] unrepresentableTotals;
+    private final PlannerAmount[] importCap;
     private final PlannerAmount[] stock;
     private final PlannerAmount[] required;
+    private final List<String> transitionNames;
+    private final PlannerAmount[][] consumed;
+    private final PlannerAmount[][] produced;
+    private final boolean[] circuitSafe;
+    private final boolean[] growthSafe;
+    private final String[] rejection;
+    private final PlannerAmount[][] growthRemainder;
+    private final PlannerAmount[][] growthConsumed;
+    private final PlannerAmount[][] growthProduced;
+    private final int declaredTransitionCount;
+    private final boolean growthSelfLoop;
 
     private CycleNet(Builder builder) {
+        int t = builder.transitionNames.size();
         this.keyCount = builder.keyCount;
-        this.keyNames = List.copyOf(Arrays.asList(builder.keyNames));
-        this.transitionNames = List.copyOf(builder.transitionNames);
-        this.consumed = builder.consumed.stream().map(long[]::clone).toArray(long[][]::new);
-        this.produced = builder.produced.stream().map(long[]::clone).toArray(long[][]::new);
+        this.keyNames = builder.keyNames.clone();
         this.boundary = builder.boundary.clone();
+        this.unbounded = builder.unbounded.clone();
         this.member = builder.member.clone();
-        this.circuitSafe = toArray(builder.circuitSafe);
-        this.growthSafe = toArray(builder.growthSafe);
-        this.growthRemainder = builder.growthRemainder.stream().map(long[]::clone).toArray(long[][]::new);
-        this.declaredTransitionCount = Math.max(builder.declaredTransitionCount, builder.transitionNames.size());
-        this.rejection = builder.rejection.toArray(new String[0]);
-        this.unrepresentableTotals = builder.unrepresentableTotals.toArray(new String[0]);
+        this.importCap = builder.importCap.clone();
         this.stock = builder.stock.clone();
         this.required = builder.required.clone();
+        this.transitionNames = List.copyOf(builder.transitionNames);
+        this.consumed = builder.consumed.stream().map(PlannerAmount[]::clone).toArray(PlannerAmount[][]::new);
+        this.produced = builder.produced.stream().map(PlannerAmount[]::clone).toArray(PlannerAmount[][]::new);
+        this.growthRemainder = builder.growthRemainder.stream().map(PlannerAmount[]::clone).toArray(PlannerAmount[][]::new);
+        this.growthConsumed = builder.growthConsumed.stream().map(PlannerAmount[]::clone).toArray(PlannerAmount[][]::new);
+        this.growthProduced = builder.growthProduced.stream().map(PlannerAmount[]::clone).toArray(PlannerAmount[][]::new);
+        this.circuitSafe = new boolean[t];
+        this.growthSafe = new boolean[t];
+        for (int i = 0; i < t; i++) {
+            circuitSafe[i] = builder.circuitSafe.get(i);
+            growthSafe[i] = builder.growthSafe.get(i);
+        }
+        this.rejection = builder.rejection.toArray(new String[0]);
+        this.declaredTransitionCount = Math.max(builder.declaredTransitionCount, t);
+        this.growthSelfLoop = builder.growthSelfLoop;
     }
 
     public static Builder builder(int keyCount) {
@@ -74,29 +83,25 @@ public final class CycleNet {
 
     public int keyCount() { return keyCount; }
     public int transitionCount() { return transitionNames.size(); }
-    public String keyName(int key) { return keyNames.get(key); }
+    public String keyName(int key) { return keyNames[key]; }
     public String transitionName(int transition) { return transitionNames.get(transition); }
-    public long consumed(int transition, int key) { return consumed[transition][key]; }
-    public long produced(int transition, int key) { return produced[transition][key]; }
     public boolean boundary(int key) { return boundary[key]; }
+    public boolean unbounded(int key) { return unbounded[key]; }
     public boolean member(int key) { return member[key]; }
-    public boolean circuitSafe(int transition) { return circuitSafe[transition]; }
-    public boolean growthSafe(int transition) { return growthSafe[transition]; }
-    public long growthRemainder(int transition, int key) { return growthRemainder[transition][key]; }
-    public int declaredTransitionCount() { return declaredTransitionCount; }
-    /** Caller-detected reason the recipe cannot be modelled, or null. */
-    public String rejection(int transition) { return rejection[transition]; }
-    /** Caller-detected per-recipe total beyond the long range (message detail), or null. */
-    public String unrepresentableTotals(int transition) { return unrepresentableTotals[transition]; }
+    /** The import cap of a key, or {@code null} when it has none. */
+    public PlannerAmount importCap(int key) { return importCap[key]; }
     public PlannerAmount stock(int key) { return stock[key]; }
     public PlannerAmount required(int key) { return required[key]; }
-
-    long[][] consumedMatrix() { return consumed; }
-    long[][] producedMatrix() { return produced; }
-    boolean[] boundaryArray() { return boundary; }
-    boolean[] memberArray() { return member; }
-    PlannerAmount[] stockArray() { return stock; }
-    PlannerAmount[] requiredArray() { return required; }
+    public PlannerAmount consumed(int transition, int key) { return consumed[transition][key]; }
+    public PlannerAmount produced(int transition, int key) { return produced[transition][key]; }
+    public boolean circuitSafe(int transition) { return circuitSafe[transition]; }
+    public boolean growthSafe(int transition) { return growthSafe[transition]; }
+    public String rejection(int transition) { return rejection[transition]; }
+    public PlannerAmount growthRemainder(int transition, int key) { return growthRemainder[transition][key]; }
+    public PlannerAmount growthConsumed(int transition, int key) { return growthConsumed[transition][key]; }
+    public PlannerAmount growthProduced(int transition, int key) { return growthProduced[transition][key]; }
+    public int declaredTransitionCount() { return declaredTransitionCount; }
+    public boolean growthSelfLoop() { return growthSelfLoop; }
 
     /** Same structure, a different inventory snapshot. */
     public CycleNet withStock(PlannerAmount[] newStock) {
@@ -115,42 +120,41 @@ public final class CycleNet {
     private Builder toBuilder() {
         Builder builder = new Builder(keyCount);
         for (int key = 0; key < keyCount; key++) {
-            builder.keyName(key, keyNames.get(key)).stock(key, stock[key]).required(key, required[key]);
+            builder.keyName(key, keyNames[key]).stock(key, stock[key]).required(key, required[key]);
             if (boundary[key]) builder.boundary(key);
+            if (unbounded[key]) builder.unbounded(key);
             if (member[key]) builder.member(key);
+            if (importCap[key] != null) builder.importCap(key, importCap[key]);
         }
         for (int t = 0; t < transitionCount(); t++) {
             builder.addTransition(transitionNames.get(t), consumed[t], produced[t], circuitSafe[t], growthSafe[t]);
             builder.growthRemainder(t, growthRemainder[t]);
+            builder.growthProfile(t, growthConsumed[t], growthProduced[t]);
             if (rejection[t] != null) builder.rejectTransition(t, rejection[t]);
-            if (unrepresentableTotals[t] != null) builder.unrepresentableTotals(t, unrepresentableTotals[t]);
         }
-        builder.declaredTransitions(declaredTransitionCount);
-        return builder;
-    }
-
-    private static boolean[] toArray(List<Boolean> values) {
-        boolean[] result = new boolean[values.size()];
-        for (int i = 0; i < result.length; i++) result[i] = values.get(i);
-        return result;
+        return builder.declaredTransitions(declaredTransitionCount).growthSelfLoop(growthSelfLoop);
     }
 
     public static final class Builder {
         private final int keyCount;
         private final String[] keyNames;
         private final boolean[] boundary;
+        private final boolean[] unbounded;
         private final boolean[] member;
+        private final PlannerAmount[] importCap;
         private final PlannerAmount[] stock;
         private final PlannerAmount[] required;
         private final List<String> transitionNames = new ArrayList<>();
-        private final List<long[]> consumed = new ArrayList<>();
-        private final List<long[]> produced = new ArrayList<>();
+        private final List<PlannerAmount[]> consumed = new ArrayList<>();
+        private final List<PlannerAmount[]> produced = new ArrayList<>();
         private final List<Boolean> circuitSafe = new ArrayList<>();
         private final List<Boolean> growthSafe = new ArrayList<>();
-        private final List<long[]> growthRemainder = new ArrayList<>();
-        private int declaredTransitionCount;
         private final List<String> rejection = new ArrayList<>();
-        private final List<String> unrepresentableTotals = new ArrayList<>();
+        private final List<PlannerAmount[]> growthRemainder = new ArrayList<>();
+        private final List<PlannerAmount[]> growthConsumed = new ArrayList<>();
+        private final List<PlannerAmount[]> growthProduced = new ArrayList<>();
+        private int declaredTransitionCount;
+        private boolean growthSelfLoop = true;
 
         private Builder(int keyCount) {
             if (keyCount < 0) throw new IllegalArgumentException("Key count must not be negative");
@@ -158,11 +162,11 @@ public final class CycleNet {
             this.keyNames = new String[keyCount];
             for (int key = 0; key < keyCount; key++) keyNames[key] = "#" + key;
             this.boundary = new boolean[keyCount];
+            this.unbounded = new boolean[keyCount];
             this.member = new boolean[keyCount];
-            this.stock = new PlannerAmount[keyCount];
-            this.required = new PlannerAmount[keyCount];
-            Arrays.fill(stock, PlannerAmount.ZERO);
-            Arrays.fill(required, PlannerAmount.ZERO);
+            this.importCap = new PlannerAmount[keyCount];
+            this.stock = zeroes(keyCount);
+            this.required = zeroes(keyCount);
         }
 
         public Builder keyName(int key, String name) {
@@ -170,49 +174,38 @@ public final class CycleNet {
             return this;
         }
 
-        public Builder boundary(int key) {
-            boundary[checkKey(key)] = true;
+        public Builder boundary(int key) { boundary[checkKey(key)] = true; return this; }
+        public Builder unbounded(int key) { unbounded[checkKey(key)] = true; return this; }
+        public Builder member(int key) { member[checkKey(key)] = true; return this; }
+
+        public Builder importCap(int key, PlannerAmount cap) {
+            Objects.requireNonNull(cap, "cap");
+            if (cap.signum() < 0) throw new IllegalArgumentException("Negative boundary import cap");
+            importCap[checkKey(key)] = cap;
             return this;
         }
 
-        public Builder member(int key) {
-            member[checkKey(key)] = true;
-            return this;
-        }
+        public Builder stock(int key, long amount) { return stock(key, PlannerAmount.of(amount)); }
+        public Builder stock(int key, PlannerAmount amount) { stock[checkKey(key)] = Objects.requireNonNull(amount); return this; }
+        public Builder required(int key, long amount) { return required(key, PlannerAmount.of(amount)); }
+        public Builder required(int key, PlannerAmount amount) { required[checkKey(key)] = Objects.requireNonNull(amount); return this; }
 
-        public Builder stock(int key, long amount) {
-            return stock(key, PlannerAmount.of(amount));
-        }
-
-        public Builder stock(int key, PlannerAmount amount) {
-            stock[checkKey(key)] = nonNegative(amount, "stock");
-            return this;
-        }
-
-        public Builder required(int key, long amount) {
-            return required(key, PlannerAmount.of(amount));
-        }
-
-        public Builder required(int key, PlannerAmount amount) {
-            required[checkKey(key)] = nonNegative(amount, "required");
-            return this;
-        }
-
-        /** Adds a circuit-safe and growth-safe transition and returns its index. */
+        /** Adds a circuit-safe, growth-safe transition and returns its index. */
         public int addTransition(String name, long[] consumedPerFiring, long[] producedPerFiring) {
             return addTransition(name, consumedPerFiring, producedPerFiring, true, true);
         }
 
-        /** Adds a transition and returns its index. Arrays are copied and indexed by key. */
         public int addTransition(String name, long[] consumedPerFiring, long[] producedPerFiring,
+                boolean circuitSafeTransition, boolean growthSafeTransition) {
+            return addTransition(name, amounts(consumedPerFiring), amounts(producedPerFiring), circuitSafeTransition,
+                growthSafeTransition);
+        }
+
+        /** Adds a transition and returns its index; vectors are copied and indexed by key. */
+        public int addTransition(String name, PlannerAmount[] consumedPerFiring, PlannerAmount[] producedPerFiring,
                 boolean circuitSafeTransition, boolean growthSafeTransition) {
             if (consumedPerFiring.length != keyCount || producedPerFiring.length != keyCount) {
                 throw new IllegalArgumentException("Transition vectors must have one entry per key");
-            }
-            for (int key = 0; key < keyCount; key++) {
-                if (consumedPerFiring[key] < 0 || producedPerFiring[key] < 0) {
-                    throw new IllegalArgumentException("Per-firing amounts must not be negative");
-                }
             }
             int index = transitionNames.size();
             transitionNames.add(name == null ? "t" + index : name);
@@ -220,43 +213,36 @@ public final class CycleNet {
             produced.add(producedPerFiring.clone());
             circuitSafe.add(circuitSafeTransition);
             growthSafe.add(growthSafeTransition);
-            growthRemainder.add(new long[keyCount]);
             rejection.add(null);
-            unrepresentableTotals.add(null);
+            growthRemainder.add(zeroes(keyCount));
+            growthConsumed.add(consumedPerFiring.clone());
+            growthProduced.add(producedPerFiring.clone());
             return index;
         }
 
-        /**
-         * Sets the per-firing returns recorded on a transition's inputs, indexed by key (see the class notes). Only
-         * the single-recipe growth calculation reads them.
-         */
         public Builder growthRemainder(int transition, long[] remainderPerFiring) {
-            if (remainderPerFiring.length != keyCount) {
-                throw new IllegalArgumentException("Remainder vector must have one entry per key");
-            }
-            for (long amount : remainderPerFiring) {
-                if (amount < 0) throw new IllegalArgumentException("Remainder amounts must not be negative");
-            }
+            return growthRemainder(transition, amounts(remainderPerFiring));
+        }
+
+        public Builder growthRemainder(int transition, PlannerAmount[] remainderPerFiring) {
+            if (remainderPerFiring.length != keyCount) throw new IllegalArgumentException("One remainder entry per key");
             growthRemainder.set(transition, remainderPerFiring.clone());
             return this;
         }
 
-        /**
-         * Marks a recipe the caller cannot model (NeoECO's {@code unsupportedReason}). A reason starting with
-         * {@code "AMOUNT_UNREPRESENTABLE:"} is reported as {@link CycleSolveStatus#UNREPRESENTABLE}, any other as
-         * {@link CycleSolveStatus#UNSUPPORTED_PATTERN}; the first marked transition in order wins.
-         */
-        public Builder rejectTransition(int transition, String reason) {
-            rejection.set(transition, java.util.Objects.requireNonNull(reason, "reason"));
+        /** Consumption and gross production of the view NeoECO's growth calculator reads (its first declared view). */
+        public Builder growthProfile(int transition, PlannerAmount[] consumedPerFiring, PlannerAmount[] grossProducedPerFiring) {
+            if (consumedPerFiring.length != keyCount || grossProducedPerFiring.length != keyCount) {
+                throw new IllegalArgumentException("Growth profile vectors must have one entry per key");
+            }
+            growthConsumed.set(transition, consumedPerFiring.clone());
+            growthProduced.set(transition, grossProducedPerFiring.clone());
             return this;
         }
 
-        /**
-         * Marks a recipe whose summed input or output amount for one key exceeds the long range, so its row cannot
-         * be built; {@code detail} completes the diagnostic (for example {@code "input total for k amount=… max=…"}).
-         */
-        public Builder unrepresentableTotals(int transition, String detail) {
-            unrepresentableTotals.set(transition, java.util.Objects.requireNonNull(detail, "detail"));
+        /** NeoECO's {@code unsupportedReason}: the solver rejects the component at the same point of preparation. */
+        public Builder rejectTransition(int transition, String reason) {
+            rejection.set(transition, Objects.requireNonNull(reason, "reason"));
             return this;
         }
 
@@ -264,6 +250,12 @@ public final class CycleNet {
         public Builder declaredTransitions(int count) {
             if (count < 0) throw new IllegalArgumentException("Declared transition count must not be negative");
             declaredTransitionCount = count;
+            return this;
+        }
+
+        /** Whether every internal edge is a self-loop of the single recipe on the single member. Default true. */
+        public Builder growthSelfLoop(boolean value) {
+            growthSelfLoop = value;
             return this;
         }
 
@@ -276,9 +268,17 @@ public final class CycleNet {
             return key;
         }
 
-        private static PlannerAmount nonNegative(PlannerAmount amount, String what) {
-            if (amount == null || amount.signum() < 0) throw new IllegalArgumentException(what + " must not be negative");
-            return amount;
+        private PlannerAmount[] amounts(long[] values) {
+            if (values.length != keyCount) throw new IllegalArgumentException("Vectors must have one entry per key");
+            PlannerAmount[] result = new PlannerAmount[values.length];
+            for (int i = 0; i < values.length; i++) result[i] = PlannerAmount.of(values[i]);
+            return result;
+        }
+
+        private static PlannerAmount[] zeroes(int length) {
+            PlannerAmount[] result = new PlannerAmount[length];
+            Arrays.fill(result, PlannerAmount.ZERO);
+            return result;
         }
     }
 }

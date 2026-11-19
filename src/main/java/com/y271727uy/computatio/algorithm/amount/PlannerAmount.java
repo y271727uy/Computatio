@@ -148,6 +148,56 @@ public final class PlannerAmount implements Comparable<PlannerAmount> {
         return of(toBigInteger().remainder(divisor.toBigInteger()));
     }
 
+    /** Truncating quotient and remainder (the remainder takes the dividend's sign), as BigInteger does. */
+    public PlannerAmount[] divideAndRemainder(PlannerAmount divisor) {
+        Objects.requireNonNull(divisor, "divisor");
+        if (divisor.isZero()) throw new ArithmeticException("division by zero");
+        if (wideValue == null && divisor.wideValue == null) {
+            if (fastValue == Long.MIN_VALUE && divisor.fastValue == -1L) {
+                return new PlannerAmount[] {of(BigInteger.valueOf(Long.MIN_VALUE).negate()), ZERO};
+            }
+            return new PlannerAmount[] {of(fastValue / divisor.fastValue), of(fastValue % divisor.fastValue)};
+        }
+        BigInteger[] division = toBigInteger().divideAndRemainder(divisor.toBigInteger());
+        return new PlannerAmount[] {of(division[0]), of(division[1])};
+    }
+
+    public PlannerAmount negate() {
+        if (wideValue == null && fastValue != Long.MIN_VALUE) return of(-fastValue);
+        return of(toBigInteger().negate());
+    }
+
+    public PlannerAmount abs() {
+        return signum() < 0 ? negate() : this;
+    }
+
+    /** Non-negative greatest common divisor, as BigInteger does (gcd(0, 0) = 0). */
+    public PlannerAmount gcd(PlannerAmount other) {
+        Objects.requireNonNull(other, "other");
+        if (wideValue == null && other.wideValue == null && fastValue != Long.MIN_VALUE
+                && other.fastValue != Long.MIN_VALUE) {
+            long a = Math.abs(fastValue), b = Math.abs(other.fastValue);
+            while (b != 0L) {
+                long remainder = a % b;
+                a = b;
+                b = remainder;
+            }
+            return of(a);
+        }
+        return of(toBigInteger().gcd(other.toBigInteger()));
+    }
+
+    /** Same as {@link BigInteger#bitLength()}. */
+    public int bitLength() {
+        if (wideValue == null) return 64 - Long.numberOfLeadingZeros(fastValue < 0L ? ~fastValue : fastValue);
+        return wideValue.bitLength();
+    }
+
+    /** True when the magnitude is below 2^128 (NeoECO's native 128-bit tier). */
+    public boolean fitsDoubleLong() {
+        return wideValue == null || wideValue.abs().bitLength() <= 128;
+    }
+
     /** Exact planner storage estimate for a stack amount. */
     public static PlannerAmount stackBytes(PlannerAmount amount, long amountPerByte) {
         Objects.requireNonNull(amount, "amount");
@@ -177,6 +227,11 @@ public final class PlannerAmount implements Comparable<PlannerAmount> {
 
     public boolean fitsLong() {
         return wideValue == null;
+    }
+
+    /** The value clamped to the long range (NeoECO's bounded projection). */
+    public long longValueSaturated() {
+        return fitsLong() ? fastValue : signum() < 0 ? Long.MIN_VALUE : Long.MAX_VALUE;
     }
 
     public long longValueExact() {

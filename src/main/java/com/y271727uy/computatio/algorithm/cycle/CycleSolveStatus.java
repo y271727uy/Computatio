@@ -24,9 +24,7 @@ public enum CycleSolveStatus {
     UNSUPPORTED_PATTERN,
     /**
      * The exact cycle contract is known, but a caller's fixed-width (for example {@code long}) field cannot carry it.
-     * {@link BoundedCycleSolver} reports it only to echo a caller-declared rejection or recipe total
-     * ({@link CycleNet.Builder#rejectTransition}, {@link CycleNet.Builder#unrepresentableTotals}); otherwise a long-based
-     * caller maps a result whose {@link CycleSolution#exceedsLongRange()} is true to this status, as NeoECO does.
+     * {@link BoundedCycleSolver} never reports it; it stays for callers that project exact results into such fields.
      */
     UNREPRESENTABLE,
     /** Cancellation was observed and converted into a value instead of an exception. */

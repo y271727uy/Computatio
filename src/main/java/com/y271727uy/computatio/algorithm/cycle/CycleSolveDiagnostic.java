@@ -1,12 +1,14 @@
 package com.y271727uy.computatio.algorithm.cycle;
 
-/** One structured explanation entry attached to a {@link CycleSolution}. */
+/** One structured explanation entry attached to a {@link CycleSolveResult}. */
 public record CycleSolveDiagnostic(Code code, String message) {
     public enum Code {
         /** The required outputs were already covered by relevant stock; no firing was needed. */
         SATISFIED_FROM_STOCK,
         STATE_EQUATION_INFEASIBLE,
         STATE_EQUATION_WITNESS,
+        /** Independent startup-resource groups supplied a legal order for an unchanged firing vector. */
+        FACTORED_STARTUP_WITNESS,
         /** A replayed complete order determines sufficient material deficits, not a startup lower bound. */
         FULL_ORDER_MATERIAL_DEFICIT,
         STATE_EQUATION_BUDGET,
@@ -17,6 +19,8 @@ public record CycleSolveDiagnostic(Code code, String message) {
          * count, seed and external demand were computed as exact integer algebra instead of searched.
          */
         SINGLE_PATTERN_NET_GROWTH,
+        /** A seedable multi-pattern lap was solved once and scaled by its exact net output. */
+        REPEATABLE_NET_GROWTH,
         /** A deterministic multi-pattern ring was solved by exact integer balance instead of marking search. */
         DETERMINISTIC_RING_EXACT,
         /** The single-pattern net growth calculator declined; the bounded search answered instead. */
@@ -25,6 +29,8 @@ public record CycleSolveDiagnostic(Code code, String message) {
         SEED_COVERED_BY_STOCK,
         /** The witness needs more start-up material than the stock snapshot holds. */
         SEED_SHORTFALL,
+        /** Boundary imports were bounded by per-key caps; excess seed on those keys is reported as external demand. */
+        BOUNDARY_IMPORT_CAPPED,
         /** A seed ladder point was verified by an explicit search, so the seed figure is sufficient. */
         SEED_LADDER_VERIFIED,
         /** No ladder point verified in budget; the reported seed is a lower bound, not a guarantee. */
@@ -33,6 +39,11 @@ public record CycleSolveDiagnostic(Code code, String message) {
         PROVEN_INFEASIBLE_AT_CURRENT_STOCK,
         /** An identical cycle request already failed within this route-fallback invocation. */
         PROVEN_FAILURE_REUSED,
+        /**
+         * Some places are empty and only refillable by patterns that need them (an empty siphon, e.g. a missing
+         * reusable mold), and the target is unreachable without those patterns. A proof, found without searching.
+         */
+        EMPTY_SIPHON_DEADLOCK,
         /** The SCC can fire but no firing changes the deficit; it cannot create the required output. */
         NO_PRODUCTIVE_FIRING,
         STATE_BUDGET_EXHAUSTED,
@@ -43,7 +54,6 @@ public record CycleSolveDiagnostic(Code code, String message) {
         UNSUPPORTED_PATTERN,
         NO_TRANSITIONS,
         AMOUNT_OVERFLOW,
-        /** One amount exceeds the AE2 {@code long} range under NeoECO's rule; see {@link CycleSolution#exceedsLongRange()}. */
         EXECUTION_AMOUNT_UNREPRESENTABLE,
         CANCELLED,
         NOT_IMPLEMENTED,

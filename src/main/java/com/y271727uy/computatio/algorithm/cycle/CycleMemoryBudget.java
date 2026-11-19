@@ -1,9 +1,11 @@
 package com.y271727uy.computatio.algorithm.cycle;
 
 import com.y271727uy.computatio.algorithm.amount.PlannerAmount;
-import java.math.BigInteger;
 
-/** Conservative retained-size estimates, not a cap on recipe count or integer precision. */
+/**
+ * Conservative retained-size estimates, not a cap on recipe count or integer precision. Port of NeoECO's
+ * {@code CycleMemoryBudget}; the default is NeoECO's configuration default of 64 MiB.
+ */
 public final class CycleMemoryBudget {
     public static final long DEFAULT_MAX_BYTES = 64L * 1024L * 1024L;
 
@@ -26,6 +28,8 @@ public final class CycleMemoryBudget {
 
     void release(long bytes) { retained -= bytes; }
 
+    long retainedBytes() { return retained; }
+
     void check(long temporary) { check(retained, temporary); }
 
     private void check(long existing, long additional) {
@@ -35,18 +39,10 @@ public final class CycleMemoryBudget {
     }
 
     // Include object/array headers and eight-byte references even on compressed-oops JVMs.
-    static long integerBytes(BigInteger value) {
-        return 64L + 4L * ((value.bitLength() + 31L) / 32L);
-    }
-
-    /** Same value as {@code integerBytes(BigInteger.valueOf(value))}, without allocating. */
-    static long integerBytes(long value) {
-        long bitLength = 64 - Long.numberOfLeadingZeros(value < 0 ? ~value : value);
-        return 64L + 4L * ((bitLength + 31L) / 32L);
-    }
-
-    static long integerBytes(PlannerAmount amount) {
-        return amount.fitsLong() ? integerBytes(amount.longValueExact()) : integerBytes(amount.toBigInteger());
+    static long integerBytes(PlannerAmount value) {
+        if (value.fitsLong()) return 48L;
+        if (value.fitsDoubleLong()) return 80L;
+        return 128L + 4L * ((value.bitLength() + 31L) / 32L);
     }
 
     static long markingBytes(PlannerAmount[] marking) {

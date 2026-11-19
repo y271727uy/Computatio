@@ -85,66 +85,52 @@ public final class CycleSolving {
     }
 
     /**
-     * Verifies a fixed integer firing candidate with prefix/repeat algebra, without optimizing it again. Returns
-     * {@code null} when the net does not admit circuit algebra, a count is negative, or the certificate would not
-     * verify exactly this candidate.
+     * NeoECO's {@code verifyFirings}: verifies a fixed integer firing candidate (keys are transition indices) with
+     * prefix/repeat algebra, without optimizing it again. Returns {@code null} when the net does not admit circuit
+     * algebra, a count is negative, or the answer's firing counts do not equal {@code counts} exactly as a map.
      */
-    public static CycleSolution verifyFirings(CycleNet net, PlannerAmount[] counts, Cancellation cancellation)
-            throws InterruptedException {
+    public static CycleSolution verifyFirings(CycleNet net, Map<Integer, PlannerAmount> counts, CycleSolveLimits limits,
+            Cancellation cancellation) throws InterruptedException {
         Objects.requireNonNull(net, "net");
         Objects.requireNonNull(counts, "counts");
-        return new BoundedCycleSolver().verifyFirings(net, counts, CycleSolveLimits.DEFAULT,
+        return new BoundedCycleSolver().verifyFirings(net, counts, limits == null ? CycleSolveLimits.DEFAULT : limits,
             cancellation == null ? Cancellation.NONE : cancellation);
     }
 
     /**
-     * Only the single-recipe net-growth path (NeoECO's {@code BoundedCycleSolver.solveGrowth}). Returns {@code null}
-     * when the closed form does not apply, so a caller can fall back to {@link #solve(CycleNet, CycleSolveLimits,
-     * Cancellation)} with the same budget, as NeoECO's {@code SinglePatternGrowthCycleSolver} does.
+     * NeoECO's {@code CycleStateEquation.solveSparseAmounts}: exact integer solution of
+     * {@code stock - sum(column * x) >= target, x >= 0}, where each column maps a key to its net consumption per firing.
+     * Keys flagged in {@code imports} are unconstrained; {@code lowerBounds} restricts selected firing counts;
+     * {@code firstFeasible} stops at the first integer vector instead of proving the minimum.
      */
-    public static CycleSolution solveGrowth(CycleNet net, CycleSolveLimits limits, Cancellation cancellation)
-            throws InterruptedException {
-        Objects.requireNonNull(net, "net");
-        return new BoundedCycleSolver().solveGrowth(net, limits, cancellation == null ? Cancellation.NONE : cancellation);
+    public static CycleStateEquation.Result sparseAmounts(List<Map<Integer, PlannerAmount>> columns, boolean[] imports,
+            PlannerAmount[] stock, PlannerAmount[] target, Map<Integer, PlannerAmount> lowerBounds, boolean firstFeasible,
+            Cancellation cancellation) throws InterruptedException {
+        return CycleStateEquation.solveSparseAmounts(columns, imports, stock, target,
+            lowerBounds == null ? Map.of() : lowerBounds, firstFeasible, cancellation == null ? Cancellation.NONE : cancellation);
     }
 
-    /**
-     * NeoECO's map form of {@link #verifyFirings(CycleNet, PlannerAmount[], Cancellation)}, keyed by transition index:
-     * the result is returned only when its positive firing counts equal {@code counts} exactly, so an explicit zero
-     * entry or a key that is not a transition gives {@code null}.
-     */
-    public static CycleSolution verifyFirings(CycleNet net, Map<Integer, PlannerAmount> counts, Cancellation cancellation)
-            throws InterruptedException {
-        Objects.requireNonNull(net, "net");
-        Objects.requireNonNull(counts, "counts");
-        return new BoundedCycleSolver().verifyFirings(net, counts, CycleSolveLimits.DEFAULT,
-            cancellation == null ? Cancellation.NONE : cancellation);
+    /** {@link #sparseAmounts} with BigInteger columns (NeoECO's compatibility boundary). */
+    public static CycleStateEquation.Result sparseMaterialBalance(List<Map<Integer, BigInteger>> columns,
+            boolean[] imports, PlannerAmount[] stock, PlannerAmount[] target, Map<Integer, PlannerAmount> lowerBounds,
+            boolean firstFeasible, Cancellation cancellation) throws InterruptedException {
+        return CycleStateEquation.solveSparseMaterialBalance(columns, imports, stock, target,
+            lowerBounds == null ? Map.of() : lowerBounds, firstFeasible, cancellation == null ? Cancellation.NONE : cancellation);
     }
 
-    /**
-     * Exact minimum-firing integer solution of {@code stock + (produced - consumed) x >= target, x >= 0}.
-     * Keys flagged in {@code imports} are unconstrained. A feasible vector is never a liveness proof.
-     */
+    /** Dense minimum-firing material balance with explicit imports (NeoECO's {@code solveMaterialBalance}). */
     public static CycleStateEquation.Result materialBalance(long[][] consumed, long[][] produced, boolean[] imports,
             PlannerAmount[] stock, PlannerAmount[] target, Cancellation cancellation) throws InterruptedException {
         return CycleStateEquation.solveMaterialBalance(consumed, produced, imports, stock, target,
             cancellation == null ? Cancellation.NONE : cancellation);
     }
 
-    /**
-     * Sparse variant: each column maps a key to its net consumption per firing (consumed minus produced).
-     * {@code lowerBounds} restricts firing counts of selected columns; {@code firstFeasible} stops at the first
-     * integer vector instead of proving the minimum.
-     */
-    public static CycleStateEquation.Result sparseMaterialBalance(List<Map<Integer, BigInteger>> columns,
-            boolean[] imports, PlannerAmount[] stock, PlannerAmount[] target, Map<Integer, PlannerAmount> lowerBounds,
-            boolean firstFeasible, Cancellation cancellation) throws InterruptedException {
-        return CycleStateEquation.solveSparseMaterialBalance(columns, imports, stock, target,
-            lowerBounds == null ? Map.of() : lowerBounds, firstFeasible,
-            cancellation == null ? Cancellation.NONE : cancellation);
+    /** Exact per-run lap multipliers of a flat, non-nested repeat layout; rejects overlapping circuits. */
+    public static PlannerAmount[] plannerMultipliers(List<? extends RepeatLayout.Run> runs) {
+        return RepeatLayout.plannerMultipliers(Objects.requireNonNull(runs, "runs"));
     }
 
-    /** Per-run lap multipliers of a flat, non-nested repeat layout; rejects overlapping circuits. */
+    /** Long projection of {@link #plannerMultipliers}, saturated at the long range. */
     public static long[] repeatMultipliers(List<? extends RepeatLayout.Run> runs) {
         return RepeatLayout.multipliers(Objects.requireNonNull(runs, "runs"));
     }
