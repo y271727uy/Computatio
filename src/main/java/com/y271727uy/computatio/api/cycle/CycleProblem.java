@@ -2,10 +2,13 @@ package com.y271727uy.computatio.api.cycle;
 
 import com.y271727uy.computatio.algorithm.amount.PlannerAmount;
 import com.y271727uy.computatio.algorithm.cycle.BoundedCycleSolver;
-import com.y271727uy.computatio.algorithm.cycle.Cancellation;
 import com.y271727uy.computatio.algorithm.cycle.CycleNet;
+import com.y271727uy.computatio.algorithm.cycle.CycleRun;
 import com.y271727uy.computatio.algorithm.cycle.CycleSolution;
-import com.y271727uy.computatio.algorithm.cycle.CycleSolveLimits;
+import com.y271727uy.computatio.algorithm.cycle.CycleSolveDiagnostic;
+import com.y271727uy.computatio.algorithm.cycle.CycleSolveMetrics;
+import com.y271727uy.computatio.algorithm.cycle.PlanningBudget;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -16,9 +19,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.Executor;
 
 /**
- * One cyclic recipe component in the caller's own key and recipe types, turned into a {@link CycleNet} by exactly the
+ * One cyclic recipe component in the caller's own key and recipe types, turned into a cycle net by exactly the
  * rules NeoECO's {@code BoundedCycleSolver} applies to a {@code CycleSolveRequest}, with the answer mapped back.
  *
  * <ul>
@@ -56,73 +62,110 @@ public final class CycleProblem<K, R> {
         return new Builder<>();
     }
 
-    /** The net handed to the solver; key {@code i} is {@code keys().get(i)}, transition {@code t} is {@code recipes().get(t)}. */
-    public CycleNet net() { return net; }
     public List<K> keys() { return keys; }
     public List<R> recipes() { return recipes; }
     public int keyIndex(K key) { return keyIndex.getOrDefault(key, -1); }
     public int recipeIndex(R recipe) { return recipeIndex.getOrDefault(recipe, -1); }
-    public K key(int index) { return keys.get(index); }
-    public R recipe(int transition) { return recipes.get(transition); }
 
     // ------------------------------------------------------------------------------------------------------------
     // Solving
     // ------------------------------------------------------------------------------------------------------------
 
-    /** NeoECO's {@code BoundedCycleSolver.solve}. A plain cancellation gets the default budget. */
-    public CycleSolution solve(CycleSolveLimits limits, Cancellation cancellation) throws InterruptedException {
-        return new BoundedCycleSolver().solve(net, limits, cancellation == null ? Cancellation.NONE : cancellation);
+    /**
+     * NeoECO's {@code BoundedCycleSolver.solve}. Pass a {@link CycleBudget} to share one allowance with the caller's
+     * own planning; any other check gets the default budget. Throws {@link CycleBudgetExhaustedException} when the
+     * budget runs out, as NeoECO's solver lets its budget exhaustion through.
+     */
+    public CyclePlan<K, R> solve(CycleLimits limits, CycleCheck check) throws InterruptedException {
+        try {
+            return toPlan(new BoundedCycleSolver().solve(net, CycleLimits.internal(limits), Bridge.cancellation(check)));
+        } catch (PlanningBudget.Exhausted exhausted) {
+            throw Bridge.exhausted(exhausted);
+        }
     }
 
     /**
-     * NeoECO's {@code verifyFirings} with a recipe-keyed candidate: the answer is returned only when its firing counts
-     * equal {@code counts} exactly, so an explicit zero or a recipe outside this component gives {@code null}.
+     * NeoECO's {@code verifyFirings}: verifies a fixed firing candidate with prefix/repeat algebra, without optimizing
+     * it again. Returns {@code null} when the component does not admit circuit algebra, a count is negative, or the
+     * answer's firing counts do not equal {@code counts} exactly, so an explicit zero or a foreign recipe gives
+     * {@code null}.
      */
-    public CycleSolution verifyFirings(Map<R, PlannerAmount> counts, CycleSolveLimits limits, Cancellation cancellation)
+    public CyclePlan<K, R> verifyFirings(Map<R, BigInteger> counts, CycleLimits limits, CycleCheck check)
             throws InterruptedException {
         Map<Integer, PlannerAmount> byIndex = new LinkedHashMap<>();
         int foreign = -1;
         for (var entry : counts.entrySet()) {
             int index = recipeIndex(entry.getKey());
-            byIndex.put(index >= 0 ? index : foreign--, entry.getValue());
+            byIndex.put(index >= 0 ? index : foreign--, Bridge.amount(entry.getValue()));
         }
-        return new BoundedCycleSolver().verifyFirings(net, byIndex, limits,
-            cancellation == null ? Cancellation.NONE : cancellation);
+        try {
+            CycleSolution solution = new BoundedCycleSolver().verifyFirings(net, byIndex, CycleLimits.internal(limits),
+                Bridge.cancellation(check));
+            return solution == null ? null : toPlan(solution);
+        } catch (PlanningBudget.Exhausted exhausted) {
+            throw Bridge.exhausted(exhausted);
+        }
     }
 
-    // ------------------------------------------------------------------------------------------------------------
-    // Answer in the caller's types (entries and order exactly as NeoECO reports them)
-    // ------------------------------------------------------------------------------------------------------------
+    /**
+     * {@link #solve} on {@code workerExecutor} with the default budget. Cancelling the future stops the solve at its
+     * next checkpoint and completes it as {@link CycleStatus#CANCELLED}.
+     */
+    public CompletableFuture<CyclePlan<K, R>> solveAsync(CycleLimits limits, Executor workerExecutor) {
+        Objects.requireNonNull(workerExecutor, "workerExecutor");
+        CompletableFuture<CyclePlan<K, R>> future = new CompletableFuture<>();
+        workerExecutor.execute(() -> {
+            if (future.isDone()) return;
+            CycleCheck onCancel = () -> {
+                if (future.isCancelled()) throw new InterruptedException("Cycle solve was cancelled");
+            };
+            try {
+                future.complete(solve(limits, CycleBudget.withDefaults(onCancel)));
+            } catch (InterruptedException cancelled) {
+                future.complete(toPlan(CycleSolution.cancelled()));
+            } catch (Throwable failure) {
+                future.completeExceptionally(failure instanceof CompletionException ? failure
+                    : new CompletionException(failure));
+            }
+        });
+        return future;
+    }
 
-    public Map<R, PlannerAmount> firings(CycleSolution solution) { return byRecipe(solution.firings()); }
-    public Map<K, PlannerAmount> externalDemand(CycleSolution solution) { return byKey(solution.externalDemand()); }
-    public Map<K, PlannerAmount> requiredSeed(CycleSolution solution) { return byKey(solution.requiredSeed()); }
-    public Map<K, PlannerAmount> seedShortfall(CycleSolution solution) { return byKey(solution.seedShortfall()); }
-    public Map<K, PlannerAmount> produced(CycleSolution solution) { return byKey(solution.produced()); }
-    public Map<K, PlannerAmount> deliverable(CycleSolution solution) { return byKey(solution.deliverable()); }
+    private CyclePlan<K, R> toPlan(CycleSolution solution) {
+        List<CyclePlan.Run<R>> runs = new ArrayList<>(solution.plan().size());
+        for (CycleRun run : solution.plan()) {
+            runs.add(new CyclePlan.Run<>(recipes.get(run.transition()), run.count().toBigInteger(), run.repeatWidth(),
+                run.plannerRepetitions().toBigInteger()));
+        }
+        List<R> witness = new ArrayList<>(solution.witness().size());
+        for (int transition : solution.witness()) witness.add(recipes.get(transition));
+        List<CyclePlan.Diagnostic> diagnostics = new ArrayList<>(solution.diagnostics().size());
+        for (CycleSolveDiagnostic diagnostic : solution.diagnostics()) {
+            diagnostics.add(new CyclePlan.Diagnostic(diagnostic.code().name(), diagnostic.message()));
+        }
+        List<Map<K, BigInteger>> candidates = new ArrayList<>();
+        for (Map<Integer, PlannerAmount> candidate : solution.startupCandidates()) candidates.add(byKey(candidate));
+        CycleSolveMetrics m = solution.metrics();
+        return new CyclePlan<>(CycleStatus.valueOf(solution.status().name()), solution.hasExactExecutionCounts(),
+            byRecipe(solution.firings()), byKey(solution.externalDemand()), byKey(solution.requiredSeed()),
+            byKey(solution.seedShortfall()), byKey(solution.produced()), byKey(solution.deliverable()),
+            List.copyOf(runs), List.copyOf(witness), List.copyOf(diagnostics),
+            new CyclePlan.Metrics(m.relevantKeys(), m.transitions(), m.statesVisited(), m.statesExpanded(),
+                m.witnessLength(), m.seedLadderSteps(), m.stateBudgetExhausted(), m.firingDepthTruncated(),
+                m.amountOverflowTruncated(), m.greedyCandidates(), m.lookaheadNodes(), m.heuristicMacroSteps(),
+                m.heuristicBudgetExhausted()),
+            List.copyOf(candidates));
+    }
 
-    public List<Map<K, PlannerAmount>> startupCandidates(CycleSolution solution) {
-        List<Map<K, PlannerAmount>> result = new ArrayList<>();
-        for (Map<Integer, PlannerAmount> candidate : solution.startupCandidates()) result.add(byKey(candidate));
+    private Map<K, BigInteger> byKey(Map<Integer, PlannerAmount> values) {
+        Map<K, BigInteger> result = new LinkedHashMap<>();
+        values.forEach((key, amount) -> result.put(keys.get(key), amount.toBigInteger()));
         return result;
     }
 
-    /** The recipe of every single firing, when NeoECO would keep the expanded witness. */
-    public List<R> witness(CycleSolution solution) {
-        List<R> result = new ArrayList<>(solution.witness().size());
-        for (int transition : solution.witness()) result.add(recipes.get(transition));
-        return result;
-    }
-
-    private Map<K, PlannerAmount> byKey(Map<Integer, PlannerAmount> values) {
-        Map<K, PlannerAmount> result = new LinkedHashMap<>();
-        values.forEach((key, amount) -> result.put(keys.get(key), amount));
-        return result;
-    }
-
-    private Map<R, PlannerAmount> byRecipe(Map<Integer, PlannerAmount> values) {
-        Map<R, PlannerAmount> result = new LinkedHashMap<>();
-        values.forEach((transition, amount) -> result.put(recipes.get(transition), amount));
+    private Map<R, BigInteger> byRecipe(Map<Integer, PlannerAmount> values) {
+        Map<R, BigInteger> result = new LinkedHashMap<>();
+        values.forEach((transition, amount) -> result.put(recipes.get(transition), amount.toBigInteger()));
         return result;
     }
 
@@ -152,27 +195,29 @@ public final class CycleProblem<K, R> {
         public Builder<K, R> unbounded(K key) { unbounded.add(Objects.requireNonNull(key, "key")); return this; }
 
         /** Caps the total import of an importable key over the whole witness. */
-        public Builder<K, R> importCap(K key, PlannerAmount cap) {
+        public Builder<K, R> importCap(K key, BigInteger cap) {
             if (cap.signum() < 0) throw new IllegalArgumentException("Negative boundary import cap");
-            importCaps.put(Objects.requireNonNull(key, "key"), cap);
+            importCaps.put(Objects.requireNonNull(key, "key"), Bridge.amount(cap));
             return this;
         }
+
+        public Builder<K, R> importCap(K key, long cap) { return importCap(key, BigInteger.valueOf(cap)); }
 
         /** Relevant stock, raw (NeoECO's {@code plannerRelevantStock}). */
-        public Builder<K, R> stock(K key, PlannerAmount amount) {
-            stock.put(Objects.requireNonNull(key, "key"), Objects.requireNonNull(amount, "amount"));
+        public Builder<K, R> stock(K key, BigInteger amount) {
+            stock.put(Objects.requireNonNull(key, "key"), Bridge.amount(amount));
             return this;
         }
 
-        public Builder<K, R> stock(K key, long amount) { return stock(key, PlannerAmount.of(amount)); }
+        public Builder<K, R> stock(K key, long amount) { return stock(key, BigInteger.valueOf(amount)); }
 
         /** Absolute on-hand target, raw (NeoECO's {@code plannerRequiredOutputs}); required keys are indexed in this order. */
-        public Builder<K, R> required(K key, PlannerAmount amount) {
-            required.put(Objects.requireNonNull(key, "key"), Objects.requireNonNull(amount, "amount"));
+        public Builder<K, R> required(K key, BigInteger amount) {
+            required.put(Objects.requireNonNull(key, "key"), Bridge.amount(amount));
             return this;
         }
 
-        public Builder<K, R> required(K key, long amount) { return required(key, PlannerAmount.of(amount)); }
+        public Builder<K, R> required(K key, long amount) { return required(key, BigInteger.valueOf(amount)); }
 
         /** Whether every internal edge of the component is a self-loop of its single recipe on its single member. */
         public Builder<K, R> growthSelfLoop(boolean value) { growthSelfLoop = value; return this; }
@@ -247,16 +292,14 @@ public final class CycleProblem<K, R> {
         }
 
         /** A consumed input per firing (repeats of a key are summed). */
-        public RecipeSpec<K, R> input(K key, PlannerAmount amount) {
-            return input(key, amount, null, PlannerAmount.ZERO);
-        }
+        public RecipeSpec<K, R> input(K key, BigInteger amount) { return input(key, amount, null, null); }
 
-        public RecipeSpec<K, R> input(K key, long amount) { return input(key, PlannerAmount.of(amount)); }
+        public RecipeSpec<K, R> input(K key, long amount) { return input(key, BigInteger.valueOf(amount)); }
 
         /** A consumed input whose slot hands {@code remainderAmount} of {@code remainderKey} back per firing. */
-        public RecipeSpec<K, R> input(K key, PlannerAmount amount, K remainderKey, PlannerAmount remainderAmount) {
-            inputs.add(new Input<>(Objects.requireNonNull(key, "key"), Objects.requireNonNull(amount, "amount"),
-                remainderKey, remainderAmount == null ? PlannerAmount.ZERO : remainderAmount));
+        public RecipeSpec<K, R> input(K key, BigInteger amount, K remainderKey, BigInteger remainderAmount) {
+            inputs.add(new Input<>(Objects.requireNonNull(key, "key"), Bridge.amount(amount), remainderKey,
+                remainderAmount == null ? PlannerAmount.ZERO : Bridge.amount(remainderAmount)));
             return this;
         }
 

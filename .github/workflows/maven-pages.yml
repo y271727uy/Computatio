@@ -27,7 +27,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: refs/tags/v0.1.0
-          path: previous-release
+          path: releases/0.1.0
+          persist-credentials: false
+
+      - name: Check out published 0.1.1
+        uses: actions/checkout@v4
+        with:
+          ref: a1699d797e99071d3b78bc7767dde61cb8f38239
+          path: releases/0.1.1
           persist-credentials: false
 
       - uses: actions/setup-java@v4
@@ -39,10 +46,14 @@ jobs:
 
       - name: Generate Maven repository
         run: |
-          (cd previous-release && ./gradlew --no-daemon publishMavenJavaPublicationToLocalRepository -PreleaseTag=v0.1.0)
           mkdir -p build/repo
-          cp -a previous-release/build/repo/. build/repo/
-          ./gradlew --no-daemon publishMavenJavaPublicationToLocalRepository -PreleaseTag=v0.1.1
+          for version in 0.1.0 0.1.1; do
+            mkdir -p "releases/$version/build/repo"
+            cp -a build/repo/. "releases/$version/build/repo/"
+            (cd "releases/$version" && ./gradlew --no-daemon publishMavenJavaPublicationToLocalRepository "-PreleaseTag=v$version")
+            cp -a "releases/$version/build/repo/." build/repo/
+          done
+          ./gradlew --no-daemon publishMavenJavaPublicationToLocalRepository -PreleaseTag=v0.1.2
 
       - uses: actions/upload-pages-artifact@v4
         with:

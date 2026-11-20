@@ -22,7 +22,7 @@ repositories {
 }
 
 dependencies {
-    implementation 'com.y271727uy:computatio:0.1.1'
+    implementation 'com.y271727uy:computatio:0.1.2'
 }
 ```
 
