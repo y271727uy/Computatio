@@ -67,8 +67,17 @@ public final class CycleStateEquation {
     public static Result solveSparseAmounts(List<Map<Integer, PlannerAmount>> columns, boolean[] imports,
             PlannerAmount[] stock, PlannerAmount[] target, Map<Integer, PlannerAmount> lowerBounds,
             boolean firstFeasible, Cancellation cancellation) throws InterruptedException {
+        return solveSparseAmounts(columns, imports, stock, target, lowerBounds, firstFeasible, cancellation,
+            CycleMemoryBudget.DEFAULT_MAX_BYTES);
+    }
+
+    /** As above with an explicit memory allowance; running out of it answers {@link Status#UNKNOWN}. */
+    public static Result solveSparseAmounts(List<Map<Integer, PlannerAmount>> columns, boolean[] imports,
+            PlannerAmount[] stock, PlannerAmount[] target, Map<Integer, PlannerAmount> lowerBounds,
+            boolean firstFeasible, Cancellation cancellation, long maxMemoryBytes) throws InterruptedException {
+        CycleMemoryBudget memory = new CycleMemoryBudget(maxMemoryBytes);
         try {
-            return solveSparse(columns, imports, stock, target, lowerBounds, firstFeasible, cancellation, new CycleMemoryBudget());
+            return solveSparse(columns, imports, stock, target, lowerBounds, firstFeasible, cancellation, memory);
         } catch (CycleMemoryBudget.Exhausted exhausted) {
             return new Result(Status.UNKNOWN, null);
         }
@@ -77,8 +86,17 @@ public final class CycleStateEquation {
     /** Global static-pattern proposal. Imports are explicit; replay must still prove real supply and order. */
     public static Result solveMaterialBalance(long[][] consumed, long[][] produced, boolean[] imports,
             PlannerAmount[] stock, PlannerAmount[] target, Cancellation cancellation) throws InterruptedException {
+        return solveMaterialBalance(consumed, produced, imports, stock, target, cancellation,
+            CycleMemoryBudget.DEFAULT_MAX_BYTES);
+    }
+
+    /** As above with an explicit memory allowance; running out of it answers {@link Status#UNKNOWN}. */
+    public static Result solveMaterialBalance(long[][] consumed, long[][] produced, boolean[] imports,
+            PlannerAmount[] stock, PlannerAmount[] target, Cancellation cancellation, long maxMemoryBytes)
+            throws InterruptedException {
+        CycleMemoryBudget memory = new CycleMemoryBudget(maxMemoryBytes);
         try {
-            return solve(consumed, produced, imports, stock, target, cancellation, new CycleMemoryBudget());
+            return solve(consumed, produced, imports, stock, target, cancellation, memory);
         } catch (CycleMemoryBudget.Exhausted exhausted) {
             return new Result(Status.UNKNOWN, null);
         }

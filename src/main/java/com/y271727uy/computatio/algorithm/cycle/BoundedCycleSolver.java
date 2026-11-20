@@ -537,12 +537,11 @@ public final class BoundedCycleSolver implements CycleSolver {
         PlannerAmount[][] prod = new PlannerAmount[t][];
         for (int p = 0; p < t; p++) {
             cancellation.checkpoint();
-            PlannerAmount[] exactCons = new PlannerAmount[n];
-            PlannerAmount[] exactProd = new PlannerAmount[n];
-            for (int i = 0; i < n; i++) {
-                exactCons[i] = net.consumed(p, i);
-                exactProd[i] = net.produced(p, i);
-            }
+            // Dense rows exist only from here on, after the memory estimate above admitted them, as in NeoECO.
+            PlannerAmount[] exactCons = zeroes(n);
+            PlannerAmount[] exactProd = zeroes(n);
+            net.copyConsumed(p, exactCons);
+            net.copyProduced(p, exactProd);
             cons[p] = exactCons;
             prod[p] = exactProd;
         }

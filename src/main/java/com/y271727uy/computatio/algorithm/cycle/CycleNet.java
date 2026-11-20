@@ -4,7 +4,9 @@ import com.y271727uy.computatio.algorithm.amount.PlannerAmount;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.TreeMap;
 
 /**
  * Immutable description of one cyclic component, read as a small Petri net: exactly the information NeoECO's
@@ -39,14 +41,14 @@ public final class CycleNet {
     private final PlannerAmount[] stock;
     private final PlannerAmount[] required;
     private final List<String> transitionNames;
-    private final PlannerAmount[][] consumed;
-    private final PlannerAmount[][] produced;
+    private final Row[] consumed;
+    private final Row[] produced;
     private final boolean[] circuitSafe;
     private final boolean[] growthSafe;
     private final String[] rejection;
-    private final PlannerAmount[][] growthRemainder;
-    private final PlannerAmount[][] growthConsumed;
-    private final PlannerAmount[][] growthProduced;
+    private final Row[] growthRemainder;
+    private final Row[] growthConsumed;
+    private final Row[] growthProduced;
     private final int declaredTransitionCount;
     private final boolean growthSelfLoop;
 
@@ -61,11 +63,12 @@ public final class CycleNet {
         this.stock = builder.stock.clone();
         this.required = builder.required.clone();
         this.transitionNames = List.copyOf(builder.transitionNames);
-        this.consumed = builder.consumed.stream().map(PlannerAmount[]::clone).toArray(PlannerAmount[][]::new);
-        this.produced = builder.produced.stream().map(PlannerAmount[]::clone).toArray(PlannerAmount[][]::new);
-        this.growthRemainder = builder.growthRemainder.stream().map(PlannerAmount[]::clone).toArray(PlannerAmount[][]::new);
-        this.growthConsumed = builder.growthConsumed.stream().map(PlannerAmount[]::clone).toArray(PlannerAmount[][]::new);
-        this.growthProduced = builder.growthProduced.stream().map(PlannerAmount[]::clone).toArray(PlannerAmount[][]::new);
+        // Rows are immutable, so the net shares them with its builder instead of copying.
+        this.consumed = builder.consumed.toArray(new Row[0]);
+        this.produced = builder.produced.toArray(new Row[0]);
+        this.growthRemainder = builder.growthRemainder.toArray(new Row[0]);
+        this.growthConsumed = builder.growthConsumed.toArray(new Row[0]);
+        this.growthProduced = builder.growthProduced.toArray(new Row[0]);
         this.circuitSafe = new boolean[t];
         this.growthSafe = new boolean[t];
         for (int i = 0; i < t; i++) {
@@ -92,14 +95,20 @@ public final class CycleNet {
     public PlannerAmount importCap(int key) { return importCap[key]; }
     public PlannerAmount stock(int key) { return stock[key]; }
     public PlannerAmount required(int key) { return required[key]; }
-    public PlannerAmount consumed(int transition, int key) { return consumed[transition][key]; }
-    public PlannerAmount produced(int transition, int key) { return produced[transition][key]; }
+    public PlannerAmount consumed(int transition, int key) { return consumed[transition].get(key); }
+    public PlannerAmount produced(int transition, int key) { return produced[transition].get(key); }
+
+    /** Writes the transition's non-zero consumption into {@code row}, indexed by key; other entries stay as they are. */
+    public void copyConsumed(int transition, PlannerAmount[] row) { consumed[transition].copyInto(row); }
+
+    /** Writes the transition's non-zero gross production into {@code row}, indexed by key. */
+    public void copyProduced(int transition, PlannerAmount[] row) { produced[transition].copyInto(row); }
     public boolean circuitSafe(int transition) { return circuitSafe[transition]; }
     public boolean growthSafe(int transition) { return growthSafe[transition]; }
     public String rejection(int transition) { return rejection[transition]; }
-    public PlannerAmount growthRemainder(int transition, int key) { return growthRemainder[transition][key]; }
-    public PlannerAmount growthConsumed(int transition, int key) { return growthConsumed[transition][key]; }
-    public PlannerAmount growthProduced(int transition, int key) { return growthProduced[transition][key]; }
+    public PlannerAmount growthRemainder(int transition, int key) { return growthRemainder[transition].get(key); }
+    public PlannerAmount growthConsumed(int transition, int key) { return growthConsumed[transition].get(key); }
+    public PlannerAmount growthProduced(int transition, int key) { return growthProduced[transition].get(key); }
     public int declaredTransitionCount() { return declaredTransitionCount; }
     public boolean growthSelfLoop() { return growthSelfLoop; }
 
@@ -128,8 +137,9 @@ public final class CycleNet {
         }
         for (int t = 0; t < transitionCount(); t++) {
             builder.addTransition(transitionNames.get(t), consumed[t], produced[t], circuitSafe[t], growthSafe[t]);
-            builder.growthRemainder(t, growthRemainder[t]);
-            builder.growthProfile(t, growthConsumed[t], growthProduced[t]);
+            builder.growthRemainder.set(t, growthRemainder[t]);
+            builder.growthConsumed.set(t, growthConsumed[t]);
+            builder.growthProduced.set(t, growthProduced[t]);
             if (rejection[t] != null) builder.rejectTransition(t, rejection[t]);
         }
         return builder.declaredTransitions(declaredTransitionCount).growthSelfLoop(growthSelfLoop);
@@ -145,14 +155,14 @@ public final class CycleNet {
         private final PlannerAmount[] stock;
         private final PlannerAmount[] required;
         private final List<String> transitionNames = new ArrayList<>();
-        private final List<PlannerAmount[]> consumed = new ArrayList<>();
-        private final List<PlannerAmount[]> produced = new ArrayList<>();
+        private final List<Row> consumed = new ArrayList<>();
+        private final List<Row> produced = new ArrayList<>();
         private final List<Boolean> circuitSafe = new ArrayList<>();
         private final List<Boolean> growthSafe = new ArrayList<>();
         private final List<String> rejection = new ArrayList<>();
-        private final List<PlannerAmount[]> growthRemainder = new ArrayList<>();
-        private final List<PlannerAmount[]> growthConsumed = new ArrayList<>();
-        private final List<PlannerAmount[]> growthProduced = new ArrayList<>();
+        private final List<Row> growthRemainder = new ArrayList<>();
+        private final List<Row> growthConsumed = new ArrayList<>();
+        private final List<Row> growthProduced = new ArrayList<>();
         private int declaredTransitionCount;
         private boolean growthSelfLoop = true;
 
@@ -207,16 +217,34 @@ public final class CycleNet {
             if (consumedPerFiring.length != keyCount || producedPerFiring.length != keyCount) {
                 throw new IllegalArgumentException("Transition vectors must have one entry per key");
             }
+            return addTransition(name, Row.ofDense(consumedPerFiring), Row.ofDense(producedPerFiring),
+                circuitSafeTransition, growthSafeTransition);
+        }
+
+        /**
+         * Adds a transition from sparse per-firing vectors ({@code key -> amount}; absent keys are zero) and returns
+         * its index. Storage is proportional to the entries, not to the key count.
+         */
+        public int addTransition(String name, Map<Integer, PlannerAmount> consumedPerFiring,
+                Map<Integer, PlannerAmount> producedPerFiring, boolean circuitSafeTransition,
+                boolean growthSafeTransition) {
+            return addTransition(name, Row.of(consumedPerFiring, keyCount), Row.of(producedPerFiring, keyCount),
+                circuitSafeTransition, growthSafeTransition);
+        }
+
+        private int addTransition(String name, Row consumedRow, Row producedRow, boolean circuitSafeTransition,
+                boolean growthSafeTransition) {
             int index = transitionNames.size();
             transitionNames.add(name == null ? "t" + index : name);
-            consumed.add(consumedPerFiring.clone());
-            produced.add(producedPerFiring.clone());
+            consumed.add(consumedRow);
+            produced.add(producedRow);
             circuitSafe.add(circuitSafeTransition);
             growthSafe.add(growthSafeTransition);
             rejection.add(null);
-            growthRemainder.add(zeroes(keyCount));
-            growthConsumed.add(consumedPerFiring.clone());
-            growthProduced.add(producedPerFiring.clone());
+            growthRemainder.add(Row.EMPTY);
+            // The growth profile defaults to the transition's own vectors; the immutable rows are shared.
+            growthConsumed.add(consumedRow);
+            growthProduced.add(producedRow);
             return index;
         }
 
@@ -226,7 +254,13 @@ public final class CycleNet {
 
         public Builder growthRemainder(int transition, PlannerAmount[] remainderPerFiring) {
             if (remainderPerFiring.length != keyCount) throw new IllegalArgumentException("One remainder entry per key");
-            growthRemainder.set(transition, remainderPerFiring.clone());
+            growthRemainder.set(transition, Row.ofDense(remainderPerFiring));
+            return this;
+        }
+
+        /** Sparse input remainders the growth profile counts ({@code key -> amount}). */
+        public Builder growthRemainder(int transition, Map<Integer, PlannerAmount> remainderPerFiring) {
+            growthRemainder.set(transition, Row.of(remainderPerFiring, keyCount));
             return this;
         }
 
@@ -235,8 +269,16 @@ public final class CycleNet {
             if (consumedPerFiring.length != keyCount || grossProducedPerFiring.length != keyCount) {
                 throw new IllegalArgumentException("Growth profile vectors must have one entry per key");
             }
-            growthConsumed.set(transition, consumedPerFiring.clone());
-            growthProduced.set(transition, grossProducedPerFiring.clone());
+            growthConsumed.set(transition, Row.ofDense(consumedPerFiring));
+            growthProduced.set(transition, Row.ofDense(grossProducedPerFiring));
+            return this;
+        }
+
+        /** Sparse form of {@link #growthProfile(int, PlannerAmount[], PlannerAmount[])}. */
+        public Builder growthProfile(int transition, Map<Integer, PlannerAmount> consumedPerFiring,
+                Map<Integer, PlannerAmount> grossProducedPerFiring) {
+            growthConsumed.set(transition, Row.of(consumedPerFiring, keyCount));
+            growthProduced.set(transition, Row.of(grossProducedPerFiring, keyCount));
             return this;
         }
 
@@ -279,6 +321,62 @@ public final class CycleNet {
             PlannerAmount[] result = new PlannerAmount[length];
             Arrays.fill(result, PlannerAmount.ZERO);
             return result;
+        }
+    }
+
+    /** Immutable sparse vector: keys ascending, non-zero amounts only. Absent keys read as zero. */
+    private static final class Row {
+        static final Row EMPTY = new Row(new int[0], new PlannerAmount[0]);
+
+        private final int[] keys;
+        private final PlannerAmount[] values;
+
+        private Row(int[] keys, PlannerAmount[] values) {
+            this.keys = keys;
+            this.values = values;
+        }
+
+        static Row ofDense(PlannerAmount[] dense) {
+            int count = 0;
+            for (PlannerAmount value : dense) if (Objects.requireNonNull(value, "amount").signum() != 0) count++;
+            if (count == 0) return EMPTY;
+            int[] keys = new int[count];
+            PlannerAmount[] values = new PlannerAmount[count];
+            int next = 0;
+            for (int key = 0; key < dense.length; key++) {
+                if (dense[key].signum() == 0) continue;
+                keys[next] = key;
+                values[next++] = dense[key];
+            }
+            return new Row(keys, values);
+        }
+
+        static Row of(Map<Integer, PlannerAmount> entries, int keyCount) {
+            TreeMap<Integer, PlannerAmount> sorted = new TreeMap<>();
+            for (Map.Entry<Integer, PlannerAmount> entry : entries.entrySet()) {
+                int key = Objects.requireNonNull(entry.getKey(), "key");
+                if (key < 0 || key >= keyCount) throw new IndexOutOfBoundsException("key " + key);
+                PlannerAmount value = Objects.requireNonNull(entry.getValue(), "amount");
+                if (value.signum() != 0) sorted.put(key, value);
+            }
+            if (sorted.isEmpty()) return EMPTY;
+            int[] keys = new int[sorted.size()];
+            PlannerAmount[] values = new PlannerAmount[sorted.size()];
+            int next = 0;
+            for (Map.Entry<Integer, PlannerAmount> entry : sorted.entrySet()) {
+                keys[next] = entry.getKey();
+                values[next++] = entry.getValue();
+            }
+            return new Row(keys, values);
+        }
+
+        PlannerAmount get(int key) {
+            int index = Arrays.binarySearch(keys, key);
+            return index >= 0 ? values[index] : PlannerAmount.ZERO;
+        }
+
+        void copyInto(PlannerAmount[] row) {
+            for (int i = 0; i < keys.length; i++) row[keys[i]] = values[i];
         }
     }
 }

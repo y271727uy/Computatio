@@ -75,5 +75,8 @@ public final class PlanningBudget implements Cancellation {
     /** Distinct from cancellation, internal errors and a proof of missing materials. */
     public static final class Exhausted extends RuntimeException {
         private Exhausted(String message) { super(message, null, false, false); }
+
+        /** An exhaustion reported from outside, by the caller's own allowance. */
+        public static Exhausted of(String message) { return new Exhausted(message); }
     }
 }

@@ -28,12 +28,24 @@ public final class CycleSolving {
     public static MaterialBalance balance(List<Map<Integer, BigInteger>> columns, boolean[] imports, BigInteger[] stock,
             BigInteger[] target, Map<Integer, BigInteger> lowerBounds, boolean firstFeasible, CycleCheck check)
             throws InterruptedException {
+        return balance(columns, imports, stock, target, lowerBounds, firstFeasible, check,
+            CycleLimits.DEFAULT_MAX_MEMORY_BYTES);
+    }
+
+    /**
+     * {@link #balance(List, boolean[], BigInteger[], BigInteger[], Map, boolean, CycleCheck)} with an explicit memory
+     * allowance (NeoECO's {@code ecoPlanningMaxMemoryMiB}); running out of it answers
+     * {@link MaterialBalance.Status#UNKNOWN}.
+     */
+    public static MaterialBalance balance(List<Map<Integer, BigInteger>> columns, boolean[] imports, BigInteger[] stock,
+            BigInteger[] target, Map<Integer, BigInteger> lowerBounds, boolean firstFeasible, CycleCheck check,
+            long maxMemoryBytes) throws InterruptedException {
         List<Map<Integer, PlannerAmount>> amounts = new ArrayList<>(columns.size());
         for (Map<Integer, BigInteger> column : columns) amounts.add(Bridge.amounts(column));
         Map<Integer, PlannerAmount> bounds = lowerBounds == null ? Map.of() : Bridge.amounts(lowerBounds);
         try {
             return toBalance(CycleStateEquation.solveSparseAmounts(amounts, imports, Bridge.amounts(stock),
-                Bridge.amounts(target), bounds, firstFeasible, Bridge.cancellation(check)));
+                Bridge.amounts(target), bounds, firstFeasible, Bridge.cancellation(check), maxMemoryBytes));
         } catch (PlanningBudget.Exhausted exhausted) {
             throw Bridge.exhausted(exhausted);
         }
@@ -45,9 +57,15 @@ public final class CycleSolving {
      */
     public static MaterialBalance balance(long[][] consumed, long[][] produced, boolean[] imports, BigInteger[] stock,
             BigInteger[] target, CycleCheck check) throws InterruptedException {
+        return balance(consumed, produced, imports, stock, target, check, CycleLimits.DEFAULT_MAX_MEMORY_BYTES);
+    }
+
+    /** The dense {@code balance} with an explicit memory allowance; running out of it answers {@code UNKNOWN}. */
+    public static MaterialBalance balance(long[][] consumed, long[][] produced, boolean[] imports, BigInteger[] stock,
+            BigInteger[] target, CycleCheck check, long maxMemoryBytes) throws InterruptedException {
         try {
             return toBalance(CycleStateEquation.solveMaterialBalance(consumed, produced, imports, Bridge.amounts(stock),
-                Bridge.amounts(target), Bridge.cancellation(check)));
+                Bridge.amounts(target), Bridge.cancellation(check), maxMemoryBytes));
         } catch (PlanningBudget.Exhausted exhausted) {
             throw Bridge.exhausted(exhausted);
         }

@@ -18,7 +18,13 @@ final class Bridge {
         if (check == null) return Cancellation.NONE;
         if (check instanceof CycleBudget budget) return budget.internal();
         return new Cancellation() {
-            @Override public void checkpoint() throws InterruptedException { check.checkpoint(); }
+            @Override public void checkpoint() throws InterruptedException {
+                try {
+                    check.checkpoint();
+                } catch (CycleBudgetExhaustedException exhausted) {
+                    throw internal(exhausted);
+                }
+            }
             @Override public boolean improveCompletedPlans() { return check.improveCompletedPlans(); }
         };
     }
@@ -50,6 +56,12 @@ final class Bridge {
         Map<K, BigInteger> result = new LinkedHashMap<>();
         values.forEach((key, value) -> result.put(key, value.toBigInteger()));
         return result;
+    }
+
+    /** A check's reported exhaustion as the solver's own, so its optional stages react to it as to a budget. */
+    static PlanningBudget.Exhausted internal(CycleBudgetExhaustedException exhausted) {
+        if (exhausted.getCause() instanceof PlanningBudget.Exhausted original) return original;
+        return PlanningBudget.Exhausted.of(exhausted.getMessage());
     }
 
     static CycleBudgetExhaustedException exhausted(PlanningBudget.Exhausted exhausted) {

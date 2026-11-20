@@ -4,7 +4,7 @@ plugins {
 }
 
 group = 'com.y271727uy'
-version = '0.1.2'
+version = '0.1.3'
 
 def releaseTag = providers.gradleProperty('releaseTag').orNull
 if (releaseTag != null && releaseTag != "v${version}".toString()) {

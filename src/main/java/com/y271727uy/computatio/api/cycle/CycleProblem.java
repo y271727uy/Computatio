@@ -10,7 +10,6 @@ import com.y271727uy.computatio.algorithm.cycle.CycleSolveMetrics;
 import com.y271727uy.computatio.algorithm.cycle.PlanningBudget;
 import java.math.BigInteger;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -78,7 +77,8 @@ public final class CycleProblem<K, R> {
      */
     public CyclePlan<K, R> solve(CycleLimits limits, CycleCheck check) throws InterruptedException {
         try {
-            return toPlan(new BoundedCycleSolver().solve(net, CycleLimits.internal(limits), Bridge.cancellation(check)));
+            return toPlan(new BoundedCycleSolver(CycleLimits.memory(limits))
+                .solve(net, CycleLimits.internal(limits), Bridge.cancellation(check)));
         } catch (PlanningBudget.Exhausted exhausted) {
             throw Bridge.exhausted(exhausted);
         }
@@ -99,8 +99,8 @@ public final class CycleProblem<K, R> {
             byIndex.put(index >= 0 ? index : foreign--, Bridge.amount(entry.getValue()));
         }
         try {
-            CycleSolution solution = new BoundedCycleSolver().verifyFirings(net, byIndex, CycleLimits.internal(limits),
-                Bridge.cancellation(check));
+            CycleSolution solution = new BoundedCycleSolver(CycleLimits.memory(limits))
+                .verifyFirings(net, byIndex, CycleLimits.internal(limits), Bridge.cancellation(check));
             return solution == null ? null : toPlan(solution);
         } catch (PlanningBudget.Exhausted exhausted) {
             throw Bridge.exhausted(exhausted);
@@ -260,13 +260,14 @@ public final class CycleProblem<K, R> {
                 net.required(k, required.getOrDefault(key, PlannerAmount.ZERO));
             }
             List<R> recipeOrder = new ArrayList<>();
+            // Vectors stay sparse; the solver allocates dense rows only after its memory estimate admits them.
             for (RecipeSpec<K, R> spec : transitions) {
-                PlannerAmount[] cons = spec.consumed(index, n);
-                PlannerAmount[] prod = spec.produced(index, n);
                 RecipeSpec<K, R> growth = growthView.get(spec.recipe);
-                int t = net.addTransition(String.valueOf(spec.id), cons, prod, spec.circuitSafe, growth.growthSafe);
-                net.growthProfile(t, growth.consumed(index, n), growth.produced(index, n));
-                net.growthRemainder(t, growth.remainder(index, n));
+                int t = net.addTransition(String.valueOf(spec.id), spec.consumed(index), spec.produced(index),
+                    spec.circuitSafe, growth.growthSafe);
+                if (growth != spec) net.growthProfile(t, growth.consumed(index), growth.produced(index));
+                Map<Integer, PlannerAmount> remainder = growth.remainder(index);
+                if (!remainder.isEmpty()) net.growthRemainder(t, remainder);
                 if (spec.rejection != null) net.rejectTransition(t, spec.rejection);
                 recipeOrder.add(spec.recipe);
             }
@@ -323,38 +324,33 @@ public final class CycleProblem<K, R> {
             return owner;
         }
 
-        private PlannerAmount[] consumed(Map<K, Integer> index, int n) {
-            PlannerAmount[] result = zeroes(n);
+        /** Per-firing consumption by key index; repeats of a key are summed. */
+        private Map<Integer, PlannerAmount> consumed(Map<K, Integer> index) {
+            Map<Integer, PlannerAmount> result = new LinkedHashMap<>();
             for (Input<K> input : inputs) {
                 Integer slot = index.get(input.key);
-                if (slot != null) result[slot] = result[slot].add(input.amount);
+                if (slot != null) result.merge(slot, input.amount, PlannerAmount::add);
             }
             return result;
         }
 
-        private PlannerAmount[] produced(Map<K, Integer> index, int n) {
-            PlannerAmount[] result = zeroes(n);
+        private Map<Integer, PlannerAmount> produced(Map<K, Integer> index) {
+            Map<Integer, PlannerAmount> result = new LinkedHashMap<>();
             for (Output<K> output : outputs) {
                 Integer slot = index.get(output.key);
-                if (slot != null) result[slot] = result[slot].add(PlannerAmount.of(output.amount));
+                if (slot != null) result.merge(slot, PlannerAmount.of(output.amount), PlannerAmount::add);
             }
             return result;
         }
 
-        private PlannerAmount[] remainder(Map<K, Integer> index, int n) {
-            PlannerAmount[] result = zeroes(n);
+        private Map<Integer, PlannerAmount> remainder(Map<K, Integer> index) {
+            Map<Integer, PlannerAmount> result = new LinkedHashMap<>();
             for (Input<K> input : inputs) {
                 if (input.remainderKey == null) continue;
                 Integer slot = index.get(input.remainderKey);
-                if (slot != null) result[slot] = result[slot].add(input.remainderAmount);
+                if (slot != null) result.merge(slot, input.remainderAmount, PlannerAmount::add);
             }
             return result;
-        }
-
-        private static PlannerAmount[] zeroes(int n) {
-            PlannerAmount[] values = new PlannerAmount[n];
-            Arrays.fill(values, PlannerAmount.ZERO);
-            return values;
         }
     }
 
