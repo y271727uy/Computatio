@@ -14,15 +14,27 @@
 repositories {
     mavenCentral()
     maven {
-        url = uri('https://y271727uy.github.io/Computatio/')
-        content {
-            includeModule('com.y271727uy', 'computatio')
-        }
+        url = uri('https://server.cjsah.net:1002/maven/releases')
+        mavenContent { releasesOnly() }
+        content { includeModule('com.y271727uy', 'computatio') }
+    }
+    maven {
+        url = uri('https://server.cjsah.net:1002/maven/snapshots')
+        mavenContent { snapshotsOnly() }
+        content { includeModule('com.y271727uy', 'computatio') }
     }
 }
 
 dependencies {
     implementation 'com.y271727uy:computatio:0.1.3'
+    // 使用快照时，将版本号改为 0.1.3-SNAPSHOT。
 }
 ```
+
+## Maven 发布
+
+在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 中添加两个 Repository secrets：`MAVEN_USERNAME`（仓库账号）和 `MAVEN_PASSWORD`（仓库密码）。该账号需要对两个 Maven 仓库均有发布权限。
+
+- 推送到 `main` 时，GitHub Actions 将 `build.gradle` 中的 `baseVersion` 加上 `-SNAPSHOT` 后发布到 `snapshots` 仓库。
+- 发布 GitHub Release 时，Actions 将 `baseVersion` 原样发布到 `releases` 仓库。Release 标签必须为 `v<baseVersion>`，例如版本 `0.1.3` 对应 `v0.1.3`。
 
